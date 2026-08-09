@@ -14,8 +14,6 @@ export interface User {
   telegramId: string;
   username?: string;
   firstName?: string;
-  day0Date: ISODateString;
-  programLength: ProgramLength;
   timezone: string; // IANA tz, e.g. "Europe/Amsterdam"
   reminderHourMorning?: number; // 0-23, local time
   reminderHourEvening?: number;
@@ -23,7 +21,14 @@ export interface User {
   createdAt: ISODateTimeString;
 }
 
-export type MissionStatus = "draft" | "active" | "completed" | "abandoned";
+export type MissionStatus = "draft" | "active" | "completed" | "abandoned" | "paused";
+
+/**
+ * Max number of missions a user may have with status "active" at once,
+ * enforced by a DB trigger (migration 011, `max_active` literal in SQL —
+ * kept in sync with this constant manually since triggers can't import TS).
+ */
+export const MAX_ACTIVE_MISSIONS = 5;
 
 export interface Mission {
   id: UUID;
@@ -33,6 +38,8 @@ export interface Mission {
   directions: string[]; // e.g. ["Создание", "Тело", "Смелость"]
   commitmentText: string; // "договор с собой"
   status: MissionStatus;
+  day0Date: ISODateString;
+  programLength: ProgramLength;
   createdAt: ISODateTimeString;
 }
 
