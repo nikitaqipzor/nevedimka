@@ -16,6 +16,7 @@ import type {
   MentorMessageRole,
   Milestone,
   Mission,
+  MissionStatus,
   PrivacyFlag,
   ProgramLength,
   Publication,
@@ -42,8 +43,6 @@ function mapUser(r: any): User {
     telegramId: r.telegram_id,
     username: r.username ?? undefined,
     firstName: r.first_name ?? undefined,
-    day0Date: r.day0_date,
-    programLength: r.program_length as ProgramLength,
     timezone: r.timezone,
     reminderHourMorning: r.reminder_hour_morning ?? undefined,
     reminderHourEvening: r.reminder_hour_evening ?? undefined,
@@ -61,6 +60,8 @@ function mapMission(r: any): Mission {
     directions: r.directions ?? [],
     commitmentText: r.commitment_text ?? "",
     status: r.status,
+    day0Date: r.day0_date,
+    programLength: r.program_length as ProgramLength,
     createdAt: r.created_at,
   };
 }
@@ -213,18 +214,6 @@ export async function listUsersForReminder(
   });
 }
 
-export async function setProgramLength(
-  userId: string,
-  programLength: ProgramLength
-): Promise<void> {
-  await withUserContext(userId, (client) =>
-    client.query("update users set program_length = $2 where id = $1", [
-      userId,
-      programLength,
-    ])
-  );
-}
-
 export async function setTimezone(userId: string, timezone: string): Promise<void> {
   await withUserContext(userId, (client) =>
     client.query("update users set timezone = $2 where id = $1", [userId, timezone])
@@ -267,17 +256,29 @@ export async function createMission(params: {
   description?: string;
   directions: string[];
   commitmentText: string;
+  day0Date?: string;
+  programLength?: ProgramLength;
 }): Promise<Mission> {
   return withUserContext(params.userId, async (client) => {
+    // Cap enforcement (max MAX_ACTIVE_MISSIONS active missions per user) is
+    // handled entirely by the `enforce_active_mission_limit` trigger
+    // (migration 011) — deliberately not duplicated here as an app-level
+    // count check, since that would reintroduce the TOCTOU race the trigger
+    // closes. day0_date/program_length fall back to their column defaults
+    // (current_date / 180) only if the caller omits them; later tasks'
+    // bot/web call sites will always pass them explicitly.
     const r = await client.query(
-      `insert into missions (user_id, title, description, directions, commitment_text, status)
-       values ($1, $2, $3, $4, $5, 'active') returning *`,
+      `insert into missions (user_id, title, description, directions, commitment_text, status, day0_date, program_length)
+       values ($1, $2, $3, $4, $5, 'active', coalesce($6, current_date), coalesce($7, 180))
+       returning *`,
       [
         params.userId,
         params.title,
         params.description ?? null,
         params.directions,
         params.commitmentText,
+        params.day0Date ?? null,
+        params.programLength ?? null,
       ]
     );
     return mapMission(r.rows[0]);
@@ -309,11 +310,53 @@ export async function createMilestone(params: {
   });
 }
 
-export async function getActiveMission(userId: string): Promise<Mission | null> {
+/**
+ * Returns all of a user's active missions, ordered oldest-first (ascending
+ * by created_at, with id as a tiebreaker for deterministic ordering when
+ * two missions share an identical created_at timestamp — e.g. bulk/seeded
+ * inserts within the same clock tick) so call sites that need a single
+ * "most recently active" pick can consistently take the *last* element,
+ * and so new goals append to the end of any list UI.
+ */
+export async function getActiveMissions(userId: string): Promise<Mission[]> {
   return withUserContext(userId, async (client) => {
     const r = await client.query(
-      "select * from missions where user_id = $1 and status = 'active' order by created_at desc limit 1",
+      "select * from missions where user_id = $1 and status = 'active' order by created_at asc, id asc",
       [userId]
+    );
+    return r.rows.map(mapMission);
+  });
+}
+
+/**
+ * Canonical status-transition graph for missions. Exported (not a local
+ * const) so later call sites — e.g. an onboarding cap menu and the
+ * `PATCH /api/missions/[id]` route — can reuse it for a 409 check without
+ * redefining the graph.
+ */
+export const VALID_TRANSITIONS: Record<MissionStatus, MissionStatus[]> = {
+  active: ["completed", "abandoned", "paused"],
+  paused: ["active", "abandoned"],
+  draft: ["active", "abandoned"],
+  completed: [],
+  abandoned: [],
+};
+
+/**
+ * Bare status UPDATE — does NOT validate `status` against VALID_TRANSITIONS.
+ * The caller is responsible for checking the transition is legal before
+ * invoking this (e.g. the PATCH /api/missions/[id] route returning 409 on
+ * an invalid transition); this function will happily write any status.
+ */
+export async function updateMissionStatus(
+  userId: string,
+  missionId: string,
+  status: MissionStatus
+): Promise<Mission | null> {
+  return withUserContext(userId, async (client) => {
+    const r = await client.query(
+      "update missions set status = $3 where id = $1 and user_id = $2 returning *",
+      [missionId, userId, status]
     );
     return r.rowCount ? mapMission(r.rows[0]) : null;
   });
@@ -438,14 +481,10 @@ export async function createTask(params: {
         params.direction ?? null,
       ]
     );
-    const task = mapTask(r.rows[0]);
-    if (task.isMainTask && params.dailyPlanId) {
-      await client.query("update daily_plans set main_task_id = $2 where id = $1", [
-        params.dailyPlanId,
-        task.id,
-      ]);
-    }
-    return task;
+    return mapTask(r.rows[0]);
+    // main_task_id is intentionally no longer written here — see
+    // listTasksForPlan / callers filtering by is_main_task instead.
+    // Column kept on daily_plans (nullable, unused) per spec decision.
   });
 }
 
