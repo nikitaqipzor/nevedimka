@@ -12,6 +12,7 @@
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import pg from "pg";
+import { MAX_ACTIVE_MISSIONS } from "@nevidimka/shared-types";
 
 const ADMIN_URL = process.env.DATABASE_URL ?? "postgres://postgres:postgres@localhost:5432/postgres";
 const TEST_DB = "nevidimka_rls_test";
@@ -96,8 +97,12 @@ test("two users cannot see each other's data under a real non-superuser RLS-enfo
   await db.addIdea(userB.id, "Idea B");
 
   // Basic read isolation
-  assert.equal((await db.getActiveMission(userA.id))?.title, "Mission A");
-  assert.equal((await db.getActiveMission(userB.id))?.title, "Mission B");
+  const missionsA = await db.getActiveMissions(userA.id);
+  const missionsB = await db.getActiveMissions(userB.id);
+  assert.equal(missionsA.length, 1);
+  assert.equal(missionsB.length, 1);
+  assert.equal(missionsA[0].title, "Mission A");
+  assert.equal(missionsB[0].title, "Mission B");
   assert.ok(!(await db.listInboxIdeas(userA.id)).some((i) => i.text === "Idea B"));
   assert.ok(!(await db.listInboxIdeas(userB.id)).some((i) => i.text === "Idea A"));
 
@@ -126,4 +131,77 @@ test("two users cannot see each other's data under a real non-superuser RLS-enfo
 
   void taskA;
   void taskB;
+});
+
+test("multiple active missions per user stay isolated across users (multi-mission RLS)", async () => {
+  // Own throwaway users (distinct telegram ids) so this test's data can't
+  // collide with or be polluted by the other tests in this file — same
+  // isolation approach the rest of the suite already uses, just scoped to
+  // its own users rather than sharing userA/userB from the test above.
+  const userA = await db.getOrCreateUser({ telegramId: "rls-test-multi-a" });
+  const userB = await db.getOrCreateUser({ telegramId: "rls-test-multi-b" });
+
+  const missionA1 = await db.createMission({
+    userId: userA.id, title: "Multi Mission A1", description: "d",
+    directions: ["Создание"], commitmentText: "c",
+  });
+  const missionA2 = await db.createMission({
+    userId: userA.id, title: "Multi Mission A2", description: "d",
+    directions: ["Тело"], commitmentText: "c",
+  });
+  const missionB1 = await db.createMission({
+    userId: userB.id, title: "Multi Mission B1", description: "d",
+    directions: ["Разум"], commitmentText: "c",
+  });
+
+  const missionsA = await db.getActiveMissions(userA.id);
+  const missionsB = await db.getActiveMissions(userB.id);
+
+  assert.equal(missionsA.length, 2, "user A must see both of their own active missions");
+  assert.deepEqual(
+    missionsA.map((m) => m.title).sort(),
+    ["Multi Mission A1", "Multi Mission A2"]
+  );
+  assert.ok(
+    !missionsA.some((m) => m.id === missionB1.id),
+    "user A's active missions must not include user B's mission"
+  );
+
+  assert.equal(missionsB.length, 1, "user B must see only their own active mission");
+  assert.equal(missionsB[0].title, "Multi Mission B1");
+  assert.ok(
+    !missionsB.some((m) => m.id === missionA1.id || m.id === missionA2.id),
+    "user B's active missions must not include either of user A's missions"
+  );
+});
+
+test("active mission cap trigger rejects a 6th active mission for the same user", async () => {
+  const user = await db.getOrCreateUser({ telegramId: "rls-test-cap-a" });
+
+  for (let i = 0; i < MAX_ACTIVE_MISSIONS; i++) {
+    await db.createMission({
+      userId: user.id, title: `Cap Mission ${i}`, description: "d",
+      directions: ["Создание"], commitmentText: "c",
+    });
+  }
+
+  const activeBefore = await db.getActiveMissions(user.id);
+  assert.equal(activeBefore.length, MAX_ACTIVE_MISSIONS);
+
+  await assert.rejects(
+    () =>
+      db.createMission({
+        userId: user.id, title: "One Mission Too Many", description: "d",
+        directions: ["Тело"], commitmentText: "c",
+      }),
+    /cap|exceeded/i,
+    "the enforce_active_mission_limit trigger must reject the 6th active mission for this user"
+  );
+
+  const activeAfter = await db.getActiveMissions(user.id);
+  assert.equal(
+    activeAfter.length,
+    MAX_ACTIVE_MISSIONS,
+    "the rejected 6th mission must not have actually been inserted"
+  );
 });
