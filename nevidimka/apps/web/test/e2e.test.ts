@@ -7,6 +7,7 @@
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { chromium, type Browser, type Page } from "playwright";
 import pg from "pg";
 import { startMockAnthropic } from "./mock-anthropic.js";
@@ -169,9 +170,14 @@ before(async () => {
   mockTg = await startMockTelegram();
 
   // --- real Next.js dev server, real child process ---
-  const nextBin = new URL("../../../node_modules/.bin/next", import.meta.url).pathname;
+  // fileURLToPath (not .pathname) so this resolves to a real filesystem
+  // path on Windows too (.pathname keeps a leading "/" before the drive
+  // letter, which neither spawn() nor a bare exec name can use). On
+  // Windows, npm-installed bins are .cmd shims that need shell:true to run.
+  const nextBin = fileURLToPath(new URL("../../../node_modules/.bin/next", import.meta.url));
   devServer = spawn(nextBin, ["dev", "-p", String(WEB_PORT)], {
-    cwd: new URL("..", import.meta.url).pathname,
+    cwd: fileURLToPath(new URL("..", import.meta.url)),
+    shell: process.platform === "win32",
     env: {
       ...process.env,
       DATABASE_URL: urlForDb(TEST_DB),
