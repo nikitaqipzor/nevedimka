@@ -23,6 +23,30 @@ export const DayPlannerOutputSchema = z.union([
 ]);
 export type DayPlannerOutput = z.infer<typeof DayPlannerOutputSchema>;
 
+export const MultiMissionDayPlannerOutputSchema = z.union([
+  z.object({
+    plans: z
+      .array(
+        z.object({
+          mission_id: z.string(),
+          summary: z.string(),
+          main_task: z.object({
+            title: z.string(),
+            estimate_minutes: z.number().int().positive(),
+            direction: z.string().nullable(),
+          }),
+          reasoning_note: z.string(),
+        })
+      )
+      .min(1)
+      .refine((plans) => plans.length === new Set(plans.map((p) => p.mission_id)).size, {
+        message: "duplicate mission_id in plans array",
+      }),
+  }),
+  z.object({ error: z.literal("no_active_mission") }),
+]);
+export type MultiMissionDayPlannerOutput = z.infer<typeof MultiMissionDayPlannerOutputSchema>;
+
 export const ActionCoachOutputSchema = z.object({
   first_step: z.string(),
   subtasks: z.array(z.string()).max(5),

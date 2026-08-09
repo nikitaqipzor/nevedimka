@@ -6,6 +6,7 @@ import {
   BehaviorAnalystOutputSchema,
   DayPlannerOutputSchema,
   MentorChatOutputSchema,
+  MultiMissionDayPlannerOutputSchema,
   PrivacyGuardOutputSchema,
   ResultReviewerOutputSchema,
   SkillsMentorOutputSchema,
@@ -15,6 +16,7 @@ import {
   type BehaviorAnalystOutput,
   type DayPlannerOutput,
   type MentorChatOutput,
+  type MultiMissionDayPlannerOutput,
   type PrivacyGuardOutput,
   type ResultReviewerOutput,
   type SkillsMentorOutput,
@@ -78,6 +80,38 @@ export async function planDay(
     userId,
   });
   const output = parseRoleOutput("planDay", DayPlannerOutputSchema, result);
+  return { output, tokensIn: result.tokensIn, tokensOut: result.tokensOut, costUsd: result.costUsd };
+}
+
+export interface DayPlannerForMissionsInput {
+  userFirstName: string;
+  checkIn: {
+    sleepQuality?: number;
+    energy?: number;
+    mood?: number;
+    stress?: number;
+  };
+  missions: Array<{
+    missionId: string;
+    missionTitle: string;
+    directions: string[];
+    dayNumber: number;
+    programLength: number;
+    yesterdayMainTaskTitle?: string;
+    yesterdayCompletionPercent?: number | null;
+  }>;
+}
+
+export async function planDayForMissions(
+  input: DayPlannerForMissionsInput,
+  userId: string
+): Promise<{ output: MultiMissionDayPlannerOutput } & RoleCallMeta> {
+  const result = await callRole({
+    systemPrompt: loadPrompt("day_planner"),
+    input,
+    userId,
+  });
+  const output = parseRoleOutput("planDayForMissions", MultiMissionDayPlannerOutputSchema, result);
   return { output, tokensIn: result.tokensIn, tokensOut: result.tokensOut, costUsd: result.costUsd };
 }
 
