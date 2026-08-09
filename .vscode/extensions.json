@@ -1,0 +1,29 @@
+{
+  "recommendations": [
+    "GitHub.copilot",
+    "GitHub.copilot-chat",
+    "GitHub.vscode-pull-request-github",
+    "GitHub.vscode-github-actions",
+    "dbaeumer.vscode-eslint",
+    "esbenp.prettier-vscode",
+    "bradlc.vscode-tailwindcss",
+    "csstools.postcss",
+    "formulahendry.auto-rename-tag",
+    "usernamehw.errorlens",
+    "Prisma.prisma",
+    "ms-azuretools.vscode-docker",
+    "ms-vscode-remote.remote-containers",
+    "humao.rest-client",
+    "ms-playwright.playwright",
+    "vitest.explorer",
+    "eamodio.gitlens",
+    "vivaxy.vscode-conventional-commits",
+    "Gruntfuggly.todo-tree",
+    "yzhang.markdown-all-in-one",
+    "redhat.vscode-yaml",
+    "mikestead.dotenv",
+    "figma.figma-vscode-extension",
+    "antfu.iconify",
+    "jock.svg"
+  ]
+}

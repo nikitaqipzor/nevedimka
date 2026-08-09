@@ -1,0 +1,21 @@
+Copyright (c) 2026. All rights reserved.
+
+This is a personal project. No license is granted to use, copy, modify, or
+distribute this software without explicit permission from the author.
+
+---
+
+This file is a deliberately conservative default — it doesn't grant any
+rights away that weren't explicitly asked for. If this repository is ever
+made public or shared, and you want others to actually be able to use it,
+replace this file with a real open-source license. Two common, simple
+choices:
+
+- MIT — maximally permissive, almost no restrictions. Good default if you
+  just want people to be able to use and modify the code freely.
+- Apache 2.0 — similar to MIT, but with an explicit patent grant. Common
+  choice for anything that might touch patents.
+
+Either can be dropped in directly from https://choosealicense.com — pick
+one, replace this file's contents, and update the `license` field in each
+package.json if you want it reflected there too.

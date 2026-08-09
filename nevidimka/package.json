@@ -1,0 +1,21 @@
+{
+  "name": "nevidimka",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Release 1: AI-mentor Telegram bot core (onboarding, daily cycle, evidence, ideas inbox, next-day planning)",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "build": "npm run build --workspace=packages/shared-types && npm run build --workspace=packages/telegram && npm run build --workspace=packages/video && npm run build --workspace=packages/logger && npm run build --workspace=packages/db && npm run build --workspace=packages/ai && npm run build --workspace=apps/bot && npm run build --workspace=apps/worker && npm run build --workspace=apps/web",
+    "typecheck": "npm run build --workspace=packages/shared-types && npm run build --workspace=packages/telegram && npm run build --workspace=packages/video && npm run build --workspace=packages/logger && npm run build --workspace=packages/db && npm run build --workspace=packages/ai && npm run typecheck --workspaces --if-present",
+    "test": "npm run test --workspace=packages/db && npm run test --workspace=packages/video && npm run test --workspace=apps/bot && npm run test --workspace=apps/web",
+    "dev:bot": "npm run dev --workspace=apps/bot",
+    "db:migrate": "npm run migrate --workspace=packages/db",
+    "db:migrate:down": "npm run migrate:down --workspace=packages/db"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

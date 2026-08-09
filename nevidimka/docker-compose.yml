@@ -1,0 +1,91 @@
+# Orchestrates the whole system: Postgres, migrations, bot, worker, web.
+#
+#   cp .env.example .env   # fill in TELEGRAM_BOT_TOKEN, ANTHROPIC_API_KEY,
+#                           # OWNER_TELEGRAM_ID, JWT_SECRET (see .env.example)
+#   docker compose up --build
+#
+# DATABASE_URL in .env should point at the "postgres" service by name, not
+# localhost, when running this way — e.g.:
+#   DATABASE_URL=postgres://postgres:postgres@postgres:5432/nevidimka
+#
+# NOTE: written and reviewed carefully, but never run through a real
+# `docker compose up` — this sandbox has no Docker daemon. Treat the first
+# real run as the actual first test.
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: nevidimka
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  migrate:
+    build:
+      context: .
+      target: bot
+    command: ["node", "packages/db/dist/migrate.js"]
+    env_file: .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  bot:
+    build:
+      context: .
+      target: bot
+    env_file: .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: .
+      target: worker
+    env_file: .env
+    environment:
+      VIDEO_STORAGE_ROOT: /app/storage/video
+    volumes:
+      - video_storage:/app/storage/video
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  web:
+    build:
+      context: .
+      target: web
+    env_file: .env
+    environment:
+      VIDEO_STORAGE_ROOT: /app/storage/video
+    ports:
+      - "3000:3000"
+    volumes:
+      - video_storage:/app/storage/video
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  video_storage:

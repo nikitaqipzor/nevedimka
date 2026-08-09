@@ -1,0 +1,16 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "composite": false
+  },
+  "include": ["src", "test"],
+  "references": [
+    { "path": "../../packages/shared-types" },
+    { "path": "../../packages/db" },
+    { "path": "../../packages/ai" },
+    { "path": "../../packages/telegram" },
+    { "path": "../../packages/logger" },
+    { "path": "../../packages/video" }
+  ]
+}

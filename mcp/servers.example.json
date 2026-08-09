@@ -1,0 +1,58 @@
+{
+  "notes": [
+    "Example inventory only. Replace placeholders before use.",
+    "Prefer read-only or task-scoped enablement for write-capable servers.",
+    "Risky operations still require human approval even when a server is connected.",
+    "Default template stack: Next.js, Supabase, Vercel, Stripe, Playwright, Sentry."
+  ],
+  "servers": [
+    {
+      "name": "github",
+      "enabled": true,
+      "mode": "read-mostly",
+      "purpose": "issues, PRs, repo context, code, workflows"
+    },
+    {
+      "name": "playwright",
+      "enabled": true,
+      "mode": "task-scoped",
+      "purpose": "UI verification and browser scenarios"
+    },
+    {
+      "name": "context7",
+      "enabled": true,
+      "mode": "read-only",
+      "purpose": "up-to-date library documentation"
+    },
+    {
+      "name": "supabase",
+      "enabled": false,
+      "mode": "read-only-by-default",
+      "purpose": "DB schema, SQL, migrations context"
+    },
+    {
+      "name": "vercel",
+      "enabled": false,
+      "mode": "read-mostly",
+      "purpose": "deploys, projects, logs, environments"
+    },
+    {
+      "name": "stripe",
+      "enabled": false,
+      "mode": "read-mostly",
+      "purpose": "billing context and Stripe docs"
+    },
+    {
+      "name": "sentry",
+      "enabled": false,
+      "mode": "read-only",
+      "purpose": "production error analysis"
+    },
+    {
+      "name": "figma",
+      "enabled": false,
+      "mode": "read-only",
+      "purpose": "design context and component intent"
+    }
+  ]
+}

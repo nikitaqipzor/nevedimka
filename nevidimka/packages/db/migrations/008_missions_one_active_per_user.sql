@@ -1,0 +1,21 @@
+-- Closes a race in the onboarding "accept mission" flow
+-- (apps/bot/src/handlers/onboarding.ts handleMissionAccept): that handler
+-- was patched to re-check getActiveMission(userId) before inserting a new
+-- mission row, but a check-then-act re-check is not a hard guarantee under
+-- real concurrency (e.g. two near-simultaneous updates for the same user
+-- before in-process update-serialization takes effect, or any future
+-- multi-process deployment). Two concurrent inserts could both pass the
+-- application-level check and both end up with status = 'active' for the
+-- same user.
+--
+-- missions.user_id and missions.status are defined in 001_init.sql:
+--   user_id uuid not null references users(id) on delete cascade,
+--   status text not null default 'active' check (status in ('draft','active','completed','abandoned')),
+--
+-- This partial unique index makes "at most one active mission per user" a
+-- database-level invariant: a second concurrent insert with status =
+-- 'active' for the same user_id fails at the database, before two active
+-- missions can ever exist for one user. Missions with any other status
+-- ('draft', 'completed', 'abandoned') are unaffected and can coexist freely.
+create unique index if not exists uq_missions_one_active_per_user
+  on missions(user_id) where status = 'active';
