@@ -8,12 +8,17 @@ import { CheckInForm } from "@/components/CheckInForm";
 import { TaskCard } from "@/components/TaskCard";
 import { EmptyState, Eyebrow, Panel } from "@/components/ui";
 
+interface TodayMission {
+  id: string;
+  title: string;
+  dayNumber: number;
+  programLength: number;
+}
+
 interface TodayResponse {
   state: "no_mission" | "needs_checkin" | "no_plan_yet" | "ready";
-  dayNumber?: number;
-  programLength?: number;
-  missionTitle?: string;
   userFirstName?: string;
+  missions?: TodayMission[];
   plan?: {
     id: string;
     aiSummary?: string;
@@ -71,13 +76,15 @@ export default function TodayPage() {
     );
   }
 
+  const missionById = new Map((data.missions ?? []).map((m) => [m.id, m]));
+
   return (
     <div className="px-5 pt-6">
-      <DayGauge
-        dayNumber={data.dayNumber ?? 0}
-        programLength={data.programLength ?? 1}
-        label={data.missionTitle}
-      />
+      <div className="space-y-5">
+        {(data.missions ?? []).map((m) => (
+          <DayGauge key={m.id} dayNumber={m.dayNumber} programLength={m.programLength} label={m.title} />
+        ))}
+      </div>
 
       <div className="mt-6 space-y-3">
         {data.state === "needs_checkin" && (
@@ -114,7 +121,12 @@ export default function TodayPage() {
               </Panel>
             )}
             {(data.tasks ?? []).map((task) => (
-              <TaskCard key={task.id} task={task} onChanged={load} />
+              <TaskCard
+                key={task.id}
+                task={task}
+                missionTitle={task.missionId ? missionById.get(task.missionId)?.title : undefined}
+                onChanged={load}
+              />
             ))}
           </>
         )}

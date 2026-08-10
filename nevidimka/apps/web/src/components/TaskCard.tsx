@@ -14,7 +14,15 @@ const STATUS_LABEL: Record<Task["status"], string> = {
   cancelled: "отменено",
 };
 
-export function TaskCard({ task, onChanged }: { task: Task; onChanged: () => void }) {
+export function TaskCard({
+  task,
+  missionTitle,
+  onChanged,
+}: {
+  task: Task;
+  missionTitle?: string;
+  onChanged: () => void;
+}) {
   const [focusSessionId, setFocusSessionId] = useState<string | null>(null);
   const [panel, setPanel] = useState<"report" | "coach" | null>(null);
   const [inputText, setInputText] = useState("");
@@ -109,9 +117,10 @@ export function TaskCard({ task, onChanged }: { task: Task; onChanged: () => voi
     <Panel className={task.isMainTask ? "border-brass/30" : ""}>
       <div className="flex items-start justify-between gap-3">
         <div>
-          {task.isMainTask && (
-            <div className="mb-1 font-mono text-[10px] uppercase tracking-[0.2em] text-brass">
-              главная
+          {(task.isMainTask || missionTitle) && (
+            <div className="mb-1 flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.2em] text-brass">
+              {task.isMainTask && <span>главная</span>}
+              {missionTitle && <span className="text-ink-faint normal-case tracking-normal">{missionTitle}</span>}
             </div>
           )}
           <div className="text-sm text-ink">{task.title}</div>

@@ -3,9 +3,8 @@ import {
   createTask,
   addEvidence,
   endFocusSession,
-  getActiveMission,
+  getActiveMissions,
   getOrCreateTodayPlan,
-  getRecentPlans,
   getTaskById,
   getUserById,
   listTasksForPlan,
@@ -15,7 +14,7 @@ import {
   startFocusSession,
   updateTaskStatus,
 } from "@nevidimka/db";
-import { AiRateLimitExceededError, coachAction, planDay, reviewEvidence } from "@nevidimka/ai";
+import { AiRateLimitExceededError, coachAction, planDayForMissions, reviewEvidence } from "@nevidimka/ai";
 import { validateTextLength } from "@nevidimka/shared-types";
 import { requireSession } from "@/lib/session";
 import { dayNumberFor, todayInTimezone } from "@/lib/dates";
@@ -24,24 +23,40 @@ export async function GET(): Promise<NextResponse> {
   const session = await requireSession();
   if (session instanceof NextResponse) return session;
 
-  const [user, mission] = await Promise.all([
+  const [user, missions] = await Promise.all([
     getUserById(session.userId),
-    getActiveMission(session.userId),
+    getActiveMissions(session.userId),
   ]);
   if (!user) return NextResponse.json({ code: "USER_NOT_FOUND" }, { status: 404 });
-  if (!mission) return NextResponse.json({ state: "no_mission" });
+  if (missions.length === 0) return NextResponse.json({ state: "no_mission" });
 
   const today = todayInTimezone(user.timezone);
-  const dayNumber = dayNumberFor(user.day0Date, today);
+  // DailyPlan.dayNumber is a single legacy field on the plan row; with N
+  // active missions there's no one "the" day number for the plan itself, so
+  // the oldest active mission (missions[0], per getActiveMissions' stable
+  // created_at/id ordering) stands in as a representative value for
+  // getOrCreateTodayPlan, same pattern as apps/bot/src/handlers/today.ts.
+  // Per-mission day numbers are still returned below in `missions` for the
+  // UI to render one gauge per goal.
+  const dayNumber = dayNumberFor(missions[0].day0Date, today);
   const plan = await getOrCreateTodayPlan(session.userId, today, dayNumber);
   const tasks = plan.checkIn ? await listTasksForPlan(session.userId, plan.id) : [];
 
+  // plan.mainTaskId is a legacy single-task field that createTask no longer
+  // writes; with N active missions there can be N main tasks for one plan,
+  // so "already planned" is determined by actually looking at the tasks
+  // (mirrors apps/bot/src/handlers/today.ts).
+  const mainTasks = tasks.filter((t) => t.isMainTask);
+
   return NextResponse.json({
-    state: plan.mainTaskId ? "ready" : plan.checkIn ? "no_plan_yet" : "needs_checkin",
-    dayNumber,
-    programLength: user.programLength,
-    missionTitle: mission.title,
+    state: mainTasks.length > 0 ? "ready" : plan.checkIn ? "no_plan_yet" : "needs_checkin",
     userFirstName: user.firstName,
+    missions: missions.map((m) => ({
+      id: m.id,
+      title: m.title,
+      dayNumber: dayNumberFor(m.day0Date, today),
+      programLength: m.programLength,
+    })),
     plan: { id: plan.id, aiSummary: plan.aiSummary, checkIn: plan.checkIn },
     tasks,
   });
@@ -67,12 +82,14 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
 
   switch (body.action) {
     case "checkin": {
-      const [user, mission] = await Promise.all([getUserById(userId), getActiveMission(userId)]);
-      if (!user || !mission) {
+      const [user, missions] = await Promise.all([getUserById(userId), getActiveMissions(userId)]);
+      if (!user || missions.length === 0) {
         return NextResponse.json({ code: "USER_NOT_FOUND" }, { status: 404 });
       }
       const today = todayInTimezone(user.timezone);
-      const dayNumber = dayNumberFor(user.day0Date, today);
+      // Representative day number for the plan row itself — see the GET
+      // handler's comment above for why missions[0] is used here.
+      const dayNumber = dayNumberFor(missions[0].day0Date, today);
       const plan = await getOrCreateTodayPlan(userId, today, dayNumber);
 
       await saveCheckIn(userId, plan.id, {
@@ -82,29 +99,26 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         stress: body.stress,
       });
 
-      const recentPlans = await getRecentPlans(userId, 2);
-      const yesterdayPlan = recentPlans.find((p) => p.id !== plan.id);
-      let yesterdayMainTaskTitle: string | undefined;
-      let yesterdayCompletionPercent: number | null | undefined;
-      if (yesterdayPlan) {
-        const yesterdayTasks = await listTasksForPlan(userId, yesterdayPlan.id);
-        const mainTask = yesterdayTasks.find((t) => t.isMainTask);
-        yesterdayMainTaskTitle = mainTask?.title;
-        yesterdayCompletionPercent = mainTask?.completionPercent ?? null;
-      }
-
-      let planResult: Awaited<ReturnType<typeof planDay>>;
+      // Known limitation, same as apps/bot/src/handlers/today.ts:
+      // yesterdayMainTaskTitle/yesterdayCompletionPercent are intentionally
+      // omitted here — computing them per-mission would need a new
+      // repository helper (yesterday's plan's tasks filtered by
+      // mission_id) that doesn't exist yet. Both fields are optional on
+      // DayPlannerForMissionsInput, so omitting them only reduces prompt
+      // richness, it doesn't block correctness.
+      let planResult: Awaited<ReturnType<typeof planDayForMissions>>;
       try {
-        planResult = await planDay(
+        planResult = await planDayForMissions(
           {
             userFirstName: user.firstName ?? "друг",
-            dayNumber,
-            programLength: user.programLength,
-            missionTitle: mission.title,
-            directions: mission.directions,
-            yesterdayMainTaskTitle,
-            yesterdayCompletionPercent,
             checkIn: { sleepQuality: body.sleepQuality, energy: body.energy, mood: body.mood, stress: body.stress },
+            missions: missions.map((m) => ({
+              missionId: m.id,
+              missionTitle: m.title,
+              directions: m.directions,
+              dayNumber: dayNumberFor(m.day0Date, today),
+              programLength: m.programLength,
+            })),
           },
           userId
         );
@@ -118,33 +132,50 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         throw err;
       }
       const { output, tokensIn, tokensOut, costUsd } = planResult;
-      await logAiCall({ userId, role: "day_planner", input: { dayNumber }, output, tokensIn, tokensOut, costUsd });
+      await logAiCall({
+        userId,
+        role: "day_planner",
+        input: { missionIds: missions.map((m) => m.id) },
+        output,
+        tokensIn,
+        tokensOut,
+        costUsd,
+      });
 
       if ("error" in output) {
         return NextResponse.json({ code: "AI_NO_MISSION" }, { status: 422 });
       }
 
-      await createTask({
-        userId,
-        dailyPlanId: plan.id,
-        missionId: mission.id,
-        title: output.main_task.title,
-        isMainTask: true,
-        estimateMinutes: output.main_task.estimate_minutes,
-        direction: output.main_task.direction ?? undefined,
-      });
-      for (const t of output.additional_tasks) {
+      const missionById = new Map(missions.map((m) => [m.id, m]));
+      const summaryParts: string[] = [];
+      // Same known limitation as the bot: if createTask throws partway
+      // through this loop, the user is left with a partially-planned day
+      // and no clean retry path. Out of scope here.
+      for (const p of output.plans) {
+        const mission = missionById.get(p.mission_id);
+        if (!mission) {
+          // AI-echoed mission_id doesn't match any mission we sent in the
+          // request (hallucination/garbling) — skip rather than let
+          // createTask hit a foreign-key failure.
+          console.warn("planDayForMissions returned an unknown mission_id, skipping", {
+            missionId: p.mission_id,
+            knownMissionIds: [...missionById.keys()],
+          });
+          continue;
+        }
+
         await createTask({
           userId,
           dailyPlanId: plan.id,
-          missionId: mission.id,
-          title: t.title,
-          isMainTask: false,
-          estimateMinutes: t.estimate_minutes,
-          direction: t.direction ?? undefined,
+          missionId: p.mission_id,
+          title: p.main_task.title,
+          isMainTask: true,
+          estimateMinutes: p.main_task.estimate_minutes,
+          direction: p.main_task.direction ?? undefined,
         });
+        summaryParts.push(`🎯 ${mission.title}\n${p.summary}\n${p.reasoning_note}`);
       }
-      await setPlanAiSummary(userId, plan.id, output.summary);
+      await setPlanAiSummary(userId, plan.id, summaryParts.join("\n\n"));
       return NextResponse.json({ ok: true });
     }
 
