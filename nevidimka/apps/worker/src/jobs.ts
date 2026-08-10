@@ -5,7 +5,7 @@ import {
   createVideoPublication,
   createVideoRender,
   createVideoTranscript,
-  getActiveMission,
+  getActiveMissions,
   getLatestVideoRender,
   getUserById,
   markPublicationFailed,
@@ -162,12 +162,12 @@ export async function processConfirmedAsset(asset: VideoAsset): Promise<void> {
       durationSeconds: finalProbe.durationSeconds,
     });
 
-    const mission = await getActiveMission(asset.userId);
+    const missions = await getActiveMissions(asset.userId);
     const today = todayInTimezone(user.timezone);
-    const dayNumber = dayNumberFor(user.day0Date, today);
-    const captionHtml = mission
-      ? `<b>День ${dayNumber} из ${user.programLength}</b>`
-      : `<b>День ${dayNumber}</b>`;
+    const captionHtml =
+      missions.length > 0
+        ? `<b>День ${dayNumberFor(missions[missions.length - 1].day0Date, today)} из ${missions[missions.length - 1].programLength}</b>`
+        : "";
 
     const publication = await createVideoPublication({
       userId: asset.userId,
