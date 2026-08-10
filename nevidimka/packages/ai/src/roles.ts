@@ -4,7 +4,6 @@ import { loadPrompt } from "./prompts.js";
 import {
   ActionCoachOutputSchema,
   BehaviorAnalystOutputSchema,
-  DayPlannerOutputSchema,
   MentorChatOutputSchema,
   MultiMissionDayPlannerOutputSchema,
   PrivacyGuardOutputSchema,
@@ -14,7 +13,6 @@ import {
   TextEditorOutputSchema,
   type ActionCoachOutput,
   type BehaviorAnalystOutput,
-  type DayPlannerOutput,
   type MentorChatOutput,
   type MultiMissionDayPlannerOutput,
   type PrivacyGuardOutput,
@@ -52,35 +50,6 @@ function parseRoleOutput<T>(roleName: string, schema: ZodType<T>, result: CallRo
       }
     );
   }
-}
-
-export interface DayPlannerInput {
-  userFirstName: string;
-  dayNumber: number;
-  programLength: number;
-  missionTitle: string;
-  directions: string[];
-  yesterdayMainTaskTitle?: string;
-  yesterdayCompletionPercent?: number | null;
-  checkIn: {
-    sleepQuality?: number;
-    energy?: number;
-    mood?: number;
-    stress?: number;
-  };
-}
-
-export async function planDay(
-  input: DayPlannerInput,
-  userId: string
-): Promise<{ output: DayPlannerOutput } & RoleCallMeta> {
-  const result = await callRole({
-    systemPrompt: loadPrompt("day_planner"),
-    input,
-    userId,
-  });
-  const output = parseRoleOutput("planDay", DayPlannerOutputSchema, result);
-  return { output, tokensIn: result.tokensIn, tokensOut: result.tokensOut, costUsd: result.costUsd };
 }
 
 export interface DayPlannerForMissionsInput {

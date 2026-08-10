@@ -1,28 +1,5 @@
 import { z } from "zod";
 
-export const DayPlannerOutputSchema = z.union([
-  z.object({
-    summary: z.string(),
-    main_task: z.object({
-      title: z.string(),
-      estimate_minutes: z.number().int().positive(),
-      direction: z.string().nullable(),
-    }),
-    additional_tasks: z
-      .array(
-        z.object({
-          title: z.string(),
-          estimate_minutes: z.number().int().positive(),
-          direction: z.string().nullable(),
-        })
-      )
-      .max(2),
-    reasoning_note: z.string(),
-  }),
-  z.object({ error: z.literal("no_active_mission") }),
-]);
-export type DayPlannerOutput = z.infer<typeof DayPlannerOutputSchema>;
-
 export const MultiMissionDayPlannerOutputSchema = z.union([
   z.object({
     plans: z
