@@ -198,6 +198,10 @@ export function createBot(token: string, options?: { apiRoot?: string }): Bot<Bo
     await ctx.answerCallbackQuery();
     await content.handlePostPublish(ctx, ctx.match[1]);
   });
+  bot.callbackQuery(/^post:publish_mission:([^:]+):(.+)$/, async (ctx) => {
+    await ctx.answerCallbackQuery();
+    await content.handlePostPublishMissionChoice(ctx, ctx.match[1], ctx.match[2]);
+  });
   bot.callbackQuery(/^post:cancel:(.+)$/, async (ctx) => {
     await ctx.answerCallbackQuery();
     await content.handlePostCancel(ctx, ctx.match[1]);

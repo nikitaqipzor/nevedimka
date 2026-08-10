@@ -2,7 +2,7 @@ import {
   addContentVersion,
   createContentDraft,
   createTextPublication,
-  getActiveMission,
+  getActiveMissions,
   getContentDraft,
   getContentVersion,
   getUserById,
@@ -17,8 +17,13 @@ import {
 } from "@nevidimka/db";
 import { checkPrivacy, editText } from "@nevidimka/ai";
 import { formatChannelPost, sendChannelMessage, TelegramApiError } from "@nevidimka/telegram";
-import { validateTextLength, type ContentVersionStep } from "@nevidimka/shared-types";
-import { postConfirmKeyboard, postSourceKeyboard, postVersionsKeyboard } from "../keyboards.js";
+import { validateTextLength, type ContentVersionStep, type Mission, type User } from "@nevidimka/shared-types";
+import {
+  postConfirmKeyboard,
+  postMissionPickKeyboard,
+  postSourceKeyboard,
+  postVersionsKeyboard,
+} from "../keyboards.js";
 import { dayNumberFor, todayInTimezone } from "../utils/dates.js";
 import type { BotContext } from "../types.js";
 
@@ -197,19 +202,103 @@ export async function handlePostCancel(ctx: BotContext, draftId: string): Promis
   await ctx.editMessageReplyMarkup().catch(() => {});
 }
 
+/**
+ * Content drafts (see ContentDraft in packages/shared-types) don't carry a
+ * missionId of their own — a draft is created from freeform evidence text
+ * (startEditing) with no mission context at all, so there's no existing
+ * per-draft attribution to fall back on. With multi-active-goals, a single
+ * user can have more than one mission with status "active" at publish time,
+ * so which mission's day-N counter/program length the post header should
+ * use is genuinely ambiguous and has to be resolved explicitly:
+ *   - 0 active missions: nothing to attribute to, refuse to publish.
+ *   - 1 active mission: no ambiguity, publish straight through.
+ *   - 2+ active missions: ask via postMissionPickKeyboard and resume in
+ *     handlePostPublishMissionChoice once the user taps one. The in-flight
+ *     draftId/versionId already round-trips through callback data on every
+ *     other step of this flow (see postConfirmKeyboard etc.), so the picker
+ *     follows the same pattern instead of adding new ctx.session state.
+ *
+ * A future migration adding a mission_id column to content_drafts (set at
+ * creation time, e.g. from the mission the user was last acting on) would
+ * remove this ambiguity entirely and let /post skip the picker altogether —
+ * out of scope here per CLAUDE.md's migration-approval rule, flagged as a
+ * follow-up.
+ */
 export async function handlePostPublish(ctx: BotContext, draftId: string): Promise<void> {
   const userId = ctx.session.userId!;
-  const [user, mission] = await Promise.all([getUserById(userId), getActiveMission(userId)]);
-  if (!user || !mission) {
+  const [user, missions] = await Promise.all([getUserById(userId), getActiveMissions(userId)]);
+  if (!user) {
     await ctx.reply("Профиль не найден.");
     return;
   }
+  if (missions.length === 0) {
+    await ctx.reply("Нет активной цели — не к чему привязать пост. Начни новую через /addgoal.");
+    return;
+  }
+
   const channelId = user.channelId ?? process.env.TELEGRAM_CHANNEL_ID;
   const botToken = process.env.TELEGRAM_BOT_TOKEN;
   if (!channelId || !botToken) {
     await ctx.reply("Канал не подключён. Настрой его в /settings или через TELEGRAM_CHANNEL_ID.");
     return;
   }
+
+  if (missions.length > 1) {
+    await ctx.reply("К какой цели отнести этот пост?", {
+      reply_markup: postMissionPickKeyboard(draftId, missions),
+    });
+    return;
+  }
+
+  await publishDraftForMission(ctx, user, missions[0], draftId, channelId, botToken);
+}
+
+/**
+ * Resumes the publish flow started by handlePostPublish's mission picker
+ * (shown only when 2+ missions are active) once the user taps a specific
+ * mission button. Re-fetches user + active missions rather than trusting
+ * the callback's missionId blindly, so a mission that got paused/completed
+ * between "show the picker" and "tap a button" is caught here instead of
+ * silently attributing the post to a mission that's no longer active.
+ */
+export async function handlePostPublishMissionChoice(
+  ctx: BotContext,
+  draftId: string,
+  missionId: string
+): Promise<void> {
+  const userId = ctx.session.userId!;
+  const [user, missions] = await Promise.all([getUserById(userId), getActiveMissions(userId)]);
+  if (!user) {
+    await ctx.reply("Профиль не найден.");
+    return;
+  }
+  const mission = missions.find((m) => m.id === missionId);
+  if (!mission) {
+    await ctx.reply("Эта цель больше не активна. Попробуй /post ещё раз.");
+    await ctx.editMessageReplyMarkup().catch(() => {});
+    return;
+  }
+
+  const channelId = user.channelId ?? process.env.TELEGRAM_CHANNEL_ID;
+  const botToken = process.env.TELEGRAM_BOT_TOKEN;
+  if (!channelId || !botToken) {
+    await ctx.reply("Канал не подключён. Настрой его в /settings или через TELEGRAM_CHANNEL_ID.");
+    return;
+  }
+
+  await ctx.editMessageReplyMarkup().catch(() => {});
+  await publishDraftForMission(ctx, user, mission, draftId, channelId, botToken);
+}
+
+async function publishDraftForMission(
+  ctx: BotContext,
+  user: User,
+  mission: Mission,
+  draftId: string,
+  channelId: string,
+  botToken: string
+): Promise<void> {
+  const userId = ctx.session.userId!;
 
   const draft = await getContentDraft(userId, draftId);
   if (!draft || !draft.chosenVersionId) {
@@ -245,8 +334,8 @@ export async function handlePostPublish(ctx: BotContext, draftId: string): Promi
   }
 
   const today = todayInTimezone(user.timezone);
-  const dayNumber = dayNumberFor(user.day0Date, today);
-  const html = formatChannelPost({ dayNumber, programLength: user.programLength, text: version.text });
+  const dayNumber = dayNumberFor(mission.day0Date, today);
+  const html = formatChannelPost({ dayNumber, programLength: mission.programLength, text: version.text });
 
   await updateDraftStatus(userId, draftId, "publishing");
   const publication = await createTextPublication({

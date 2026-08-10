@@ -1,4 +1,5 @@
 import { InlineKeyboard, Keyboard } from "grammy";
+import type { Mission } from "@nevidimka/shared-types";
 
 /**
  * Persistent reply keyboard — always visible below the chat input, unlike
@@ -87,6 +88,19 @@ export function postConfirmKeyboard(draftId: string): InlineKeyboard {
   return new InlineKeyboard()
     .text("Опубликовать", `post:publish:${draftId}`)
     .text("Отмена", `post:cancel:${draftId}`);
+}
+
+/**
+ * Shown when a post's publish is ambiguous because the user has more than
+ * one active mission (see handlePostPublish in handlers/content.ts) — lets
+ * them pick which mission's day counter/program the post header should use.
+ */
+export function postMissionPickKeyboard(draftId: string, missions: Mission[]): InlineKeyboard {
+  const kb = new InlineKeyboard();
+  for (const m of missions) {
+    kb.text(m.title, `post:publish_mission:${draftId}:${m.id}`).row();
+  }
+  return kb;
 }
 
 export function videoConfirmKeyboard(videoAssetId: string): InlineKeyboard {

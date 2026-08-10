@@ -12,6 +12,7 @@ import type { Bot } from "grammy";
 import type { Update } from "grammy/types";
 import { startMockAnthropic } from "./mock-anthropic.js";
 import { startMockTelegram, lastBotReply, type MockTelegramCall } from "./mock-telegram.js";
+import { addDaysToDateString, todayInTimezone } from "../src/utils/dates.js";
 
 const ADMIN_URL = process.env.DATABASE_URL ?? "postgres://postgres:postgres@localhost:5432/postgres";
 const TEST_DB = "nevidimka_bot_full_flow_test";
@@ -131,6 +132,17 @@ test("onboarding: /start creates a user and shows Day 0", async () => {
   assert.equal(users.length, 1);
   userId = users[0].id;
   assert.match(lastBotReply(tgCalls) ?? "", /Дня 0/);
+});
+
+test("/post: publish refuses gracefully when the user has no active missions yet", async () => {
+  // Runs before onboarding creates a mission, so the user genuinely has
+  // zero active missions here. handlePostPublish checks the active-mission
+  // count before it ever looks at the draft, so a nonexistent draftId is
+  // fine — this must never get far enough to touch the drafts table.
+  await bot.handleUpdate(callbackUpdate("post:publish:00000000-0000-0000-0000-000000000000"));
+  assert.match(lastBotReply(tgCalls) ?? "", /актив/i);
+  const publications = await dbRows(`select * from publications where user_id = '${userId}'`);
+  assert.equal(publications.length, 0, "no active mission means nothing should be published");
 });
 
 test("onboarding: Day 0 button -> commitment -> goal -> length -> directions -> AI strategist -> accept", async () => {
@@ -258,6 +270,101 @@ test("/post: AI editor -> privacy check -> publish -> idempotency on retry", asy
   const publicationsAfterRetry = await dbRows(`select * from publications where user_id = '${userId}'`);
   const publishedCount = publicationsAfterRetry.filter((p: any) => p.status === "published").length;
   assert.equal(publishedCount, 1, "unique index must prevent a duplicate published row");
+});
+
+test("/post: publish shows a mission picker with 2+ active missions and attributes the post to the chosen one", async () => {
+  // A day0Date 10 days back gives this mission an unambiguous, distinct day
+  // number/program length from the first mission's ("День 1 из 180"), so
+  // the resulting caption proves which mission the post actually got
+  // attributed to.
+  const day0Date2 = addDaysToDateString(todayInTimezone("Europe/Amsterdam"), -10);
+  const mission2 = await db.createMission({
+    userId,
+    title: "Начать бегать по утрам",
+    directions: ["Тело"],
+    commitmentText: "Обещаю бегать по утрам.",
+    day0Date: day0Date2,
+    programLength: 365,
+  });
+  const activeMissions = await dbRows(
+    `select * from missions where user_id = '${userId}' and status = 'active'`
+  );
+  assert.equal(activeMissions.length, 2, "must now have two active missions");
+
+  await bot.handleUpdate(textUpdate("/post"));
+  await bot.handleUpdate(callbackUpdate("post:source:new"));
+  await bot.handleUpdate(textUpdate("Пробежал 5 км утром и записал прогресс."));
+
+  const drafts = await dbRows(
+    `select * from content_drafts where user_id = '${userId}' order by created_at desc limit 1`
+  );
+  const multiDraftId = drafts[0].id;
+  await bot.handleUpdate(callbackUpdate(`post:pick:gentle:${multiDraftId}`));
+
+  await bot.handleUpdate(callbackUpdate(`post:publish:${multiDraftId}`));
+
+  // Ambiguous (2 active missions): must show a picker, not publish yet.
+  const pickerCall = tgCalls.filter((c) => c.method === "sendMessage").slice(-1)[0];
+  const keyboard = (pickerCall?.payload.reply_markup as any)?.inline_keyboard as
+    | { text: string; callback_data: string }[][]
+    | undefined;
+  assert.ok(keyboard, "must show an inline keyboard to pick a mission");
+  const buttons = keyboard.flat();
+  assert.equal(buttons.length, 2, "must show one button per active mission");
+  const mission2Button = buttons.find(
+    (b) => b.callback_data === `post:publish_mission:${multiDraftId}:${mission2.id}`
+  );
+  assert.ok(mission2Button, "must include a button for the newly created mission");
+  assert.equal(mission2Button!.text, "Начать бегать по утрам");
+
+  const publicationsBeforeChoice = await dbRows(
+    `select * from publications where draft_id = '${multiDraftId}'`
+  );
+  assert.equal(publicationsBeforeChoice.length, 0, "must not publish before a mission is chosen");
+
+  // Tap the button for the second mission.
+  await bot.handleUpdate(callbackUpdate(`post:publish_mission:${multiDraftId}:${mission2.id}`));
+
+  const sentToChannel = tgCalls
+    .filter((c) => c.method === "sendMessage" && c.payload.chat_id === "@test_channel")
+    .slice(-1)[0];
+  assert.ok(sentToChannel, "bot must send the post to the channel once a mission is chosen");
+  assert.match(sentToChannel!.payload.text as string, /День 11 из 365/, "caption must use the CHOSEN mission's day/program, not the other one");
+
+  const publicationsAfter = await dbRows(
+    `select * from publications where draft_id = '${multiDraftId}'`
+  );
+  assert.equal(publicationsAfter.length, 1);
+  assert.equal(publicationsAfter[0].status, "published");
+});
+
+test("/post: tapping a picker button for a mission that went inactive before the tap fails gracefully", async () => {
+  await bot.handleUpdate(textUpdate("/post"));
+  await bot.handleUpdate(callbackUpdate("post:source:new"));
+  await bot.handleUpdate(textUpdate("Ещё одна запись для проверки протухшего выбора цели."));
+
+  const drafts = await dbRows(
+    `select * from content_drafts where user_id = '${userId}' order by created_at desc limit 1`
+  );
+  const staleDraftId = drafts[0].id;
+  await bot.handleUpdate(callbackUpdate(`post:pick:gentle:${staleDraftId}`));
+  await bot.handleUpdate(callbackUpdate(`post:publish:${staleDraftId}`));
+
+  const activeMissions = await dbRows(
+    `select * from missions where user_id = '${userId}' and status = 'active'`
+  );
+  const staleMission = activeMissions.find((m: any) => m.title === "Начать бегать по утрам");
+  assert.ok(staleMission, "the second mission must still exist to go stale");
+
+  // The picker was already shown (its callback data captured this
+  // mission's id) — now it goes inactive before the user actually taps.
+  await db.updateMissionStatus(userId, staleMission.id, "paused");
+
+  await bot.handleUpdate(callbackUpdate(`post:publish_mission:${staleDraftId}:${staleMission.id}`));
+  assert.match(lastBotReply(tgCalls) ?? "", /не актив/i);
+
+  const publications = await dbRows(`select * from publications where draft_id = '${staleDraftId}'`);
+  assert.equal(publications.length, 0, "a stale mission choice must not create a publication");
 });
 
 test("/export sends a document containing this user's real data", async () => {
