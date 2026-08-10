@@ -1,6 +1,7 @@
 import {
-  getActiveMission,
+  getActiveMissions,
   getOrCreateTodayPlan,
+  listTasksForPlan,
   listUsersForReminder,
 } from "@nevidimka/db";
 import type { Bot } from "grammy";
@@ -27,14 +28,18 @@ async function sendEveningPing(
   bot: Bot<BotContext>,
   user: Awaited<ReturnType<typeof listUsersForReminder>>[number]
 ): Promise<void> {
-  const mission = await getActiveMission(user.id);
-  if (!mission) return;
+  const missions = await getActiveMissions(user.id);
+  if (missions.length === 0) return;
 
   const today = todayInTimezone(user.timezone);
-  const dayNumber = dayNumberFor(user.day0Date, today);
+  // See jobs/morning.ts / handlers/today.ts for why the oldest active
+  // mission stands in for the plan's single legacy dayNumber field.
+  const dayNumber = dayNumberFor(missions[0].day0Date, today);
   const plan = await getOrCreateTodayPlan(user.id, today, dayNumber);
 
-  if (!plan.mainTaskId) return; // no plan was generated today — nothing to review
+  const tasks = await listTasksForPlan(user.id, plan.id);
+  const mainTasks = tasks.filter((t) => t.isMainTask);
+  if (mainTasks.length === 0) return; // no plan was generated today — nothing to review
   if (plan.eveningReviewNote) return; // already reviewed (e.g. user ran /evening manually)
 
   const text = await buildEveningSummaryMessage(user.id, plan);
