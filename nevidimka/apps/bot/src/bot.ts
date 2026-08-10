@@ -31,6 +31,7 @@ const log = createLogger("bot");
 export async function registerBotCommands(bot: Bot<BotContext>): Promise<void> {
   await bot.api.setMyCommands([
     { command: "start", description: "Начать / посмотреть текущую миссию" },
+    { command: "addgoal", description: "Добавить новую цель" },
     { command: "today", description: "План на сегодня" },
     { command: "evening", description: "Итог дня" },
     { command: "idea", description: "Сохранить мысль без переключения" },
@@ -93,6 +94,11 @@ export function createBot(token: string, options?: { apiRoot?: string }): Bot<Bo
 
   // --- commands ---------------------------------------------------------
   bot.command("start", onboarding.startOnboarding);
+  // Same entry point as /start's "already onboarded" branch: startOnboarding
+  // is cap-aware (see Task 8), so /addgoal either begins a fresh onboarding
+  // flow for a new goal, or — if the user is already at MAX_ACTIVE_MISSIONS
+  // — shows the complete/pause menu instead of drafting a mission.
+  bot.command("addgoal", onboarding.startOnboarding);
   bot.command("today", today.handleToday);
   bot.command("evening", evening.handleEveningRequest);
   bot.command("idea", ideasHandlers.handleIdeaRequest);
@@ -109,7 +115,8 @@ export function createBot(token: string, options?: { apiRoot?: string }): Bot<Bo
   });
   bot.command("help", async (ctx) => {
     await ctx.reply(
-      "/today — план на сегодня\n" +
+      "/addgoal — добавить новую цель\n" +
+        "/today — план на сегодня\n" +
         "/evening — итог дня\n" +
         "/idea — сохранить мысль без переключения\n" +
         "/ideas — показать хранилище идей\n" +
@@ -145,6 +152,14 @@ export function createBot(token: string, options?: { apiRoot?: string }): Bot<Bo
   bot.callbackQuery("onboarding:mission_retry", async (ctx) => {
     await ctx.answerCallbackQuery();
     await onboarding.handleMissionRetry(ctx);
+  });
+  bot.callbackQuery(/^mission_complete:(.+)$/, async (ctx) => {
+    await ctx.answerCallbackQuery();
+    await onboarding.handleMissionCompleteCallback(ctx, ctx.match[1]);
+  });
+  bot.callbackQuery(/^mission_pause:(.+)$/, async (ctx) => {
+    await ctx.answerCallbackQuery();
+    await onboarding.handleMissionPauseCallback(ctx, ctx.match[1]);
   });
   bot.callbackQuery(/^focus:start:(.+)$/, async (ctx) => {
     await ctx.answerCallbackQuery();

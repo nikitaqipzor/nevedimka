@@ -21,6 +21,8 @@ export function mainReplyKeyboard(): Keyboard {
     .row()
     .text("/video")
     .text("/settings")
+    .row()
+    .text("/addgoal")
     .resized();
 }
 
