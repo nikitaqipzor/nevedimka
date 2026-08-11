@@ -266,9 +266,16 @@ test("root redirects to /today with real data rendered (real browser, real JS ex
   assert.ok(await waitForText(page, "день 12 из 180"), "AI plan summary must render");
 });
 
-test("bottom nav: /path shows mission, milestone, and commitment text", async () => {
+test("bottom nav: /path lists active goals; tapping a card opens mission, milestone, and commitment text", async () => {
   await page.click("text=Путь");
-  await page.waitForURL(/\/path/, { timeout: 5000 });
+  await page.waitForURL(/\/path$/, { timeout: 5000 });
+  assert.ok(
+    await waitForText(page, "Собрать личную операционную систему"),
+    "goal list must show the seeded mission's title as a card"
+  );
+
+  await page.click("text=Собрать личную операционную систему");
+  await page.waitForURL(/\/path\/.+/, { timeout: 5000 });
   assert.ok(await waitForText(page, "Собрать личную операционную систему"));
   assert.ok(await waitForText(page, "MVP готов"));
   assert.ok(await waitForText(page, "доводить начатое"));
@@ -460,6 +467,56 @@ test("/api/mentor: 2 active missions, no missionId, falls back to multi-goal sum
   const mentorBody = (await mentorRes.json()) as { ok: boolean; reply?: { content?: string } };
   assert.equal(mentorBody.ok, true);
   assert.ok(mentorBody.reply?.content, "a reply must come back even without a resolved single mission");
+});
+
+test("/api/path: 2 active missions, no missionId, returns list mode with both goals; missionId returns that goal's detail", async () => {
+  // Fresh telegram_id, same reasoning as the other multi-mission tests above:
+  // keeps this independent of the shared owner's single seeded mission.
+  const telegramId = "700111555";
+  const initData = buildTelegramInitData(telegramId, "Тест Мультицель Путь");
+  const sameOriginHeaders = { "Sec-Fetch-Site": "same-origin" };
+  const authRes = await fetch(`${BASE}/api/auth/miniapp`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...sameOriginHeaders },
+    body: JSON.stringify({ initData }),
+  });
+  assert.equal(authRes.status, 200, "initData signed with the test bot token must authenticate");
+  const { userId } = (await authRes.json()) as { userId: string };
+  const setCookie = authRes.headers.get("set-cookie") ?? "";
+  const cookieHeader = setCookie.split(";")[0];
+  assert.ok(cookieHeader.startsWith("nevidimka_session="), "must receive a session cookie");
+
+  const db = await import("@nevidimka/db");
+  const mission1 = await db.createMission({
+    userId,
+    title: "Путь: первая цель",
+    directions: ["Тело"],
+    commitmentText: "Обещаю себе.",
+  });
+  const mission2 = await db.createMission({
+    userId,
+    title: "Путь: вторая цель",
+    directions: ["Смелость"],
+    commitmentText: "Обещаю себе.",
+  });
+  await db.closePool();
+
+  const listRes = await fetch(`${BASE}/api/path`, { headers: { Cookie: cookieHeader } });
+  assert.equal(listRes.status, 200);
+  const list = (await listRes.json()) as { state: string; missions: { id: string; title: string }[] };
+  assert.equal(list.state, "list", "no missionId with 2+ active missions must return list mode, not a single mission");
+  assert.equal(list.missions.length, 2, "list mode must return both active missions");
+  assert.deepEqual(
+    list.missions.map((m) => m.id).sort(),
+    [mission1.id, mission2.id].sort(),
+    "list mode must include exactly the 2 active missions, keyed by id"
+  );
+
+  const detailRes = await fetch(`${BASE}/api/path?missionId=${mission2.id}`, { headers: { Cookie: cookieHeader } });
+  assert.equal(detailRes.status, 200);
+  const detail = (await detailRes.json()) as { state: string; mission: { id: string; title: string } };
+  assert.equal(detail.state, "ready");
+  assert.equal(detail.mission.title, "Путь: вторая цель", "detail mode must be keyed off the requested missionId, not just 'the' active mission");
 });
 
 test("/analytics: 'что ты заметил' button triggers the behavior-analyst AI and renders a real observation", async () => {

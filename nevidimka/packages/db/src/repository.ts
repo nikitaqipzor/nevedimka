@@ -329,6 +329,25 @@ export async function getActiveMissions(userId: string): Promise<Mission[]> {
 }
 
 /**
+ * Fetches a single mission scoped to `userId`, the same ownership pattern as
+ * updateMissionStatus below: a mission id that exists but belongs to a
+ * different user returns null rather than throwing or leaking that the row
+ * exists. Needed by the `PATCH /api/missions/[id]` route (Task 17, not yet
+ * built) and by GET /api/path's per-mission detail mode, which uses it to
+ * key milestone/day-number calculations off that specific mission's
+ * day0Date instead of assuming a single active mission.
+ */
+export async function getMissionById(userId: string, missionId: string): Promise<Mission | null> {
+  return withUserContext(userId, async (client) => {
+    const r = await client.query("select * from missions where id = $1 and user_id = $2", [
+      missionId,
+      userId,
+    ]);
+    return r.rowCount ? mapMission(r.rows[0]) : null;
+  });
+}
+
+/**
  * Canonical status-transition graph for missions. Exported (not a local
  * const) so later call sites — e.g. an onboarding cap menu and the
  * `PATCH /api/missions/[id]` route — can reuse it for a 409 check without
