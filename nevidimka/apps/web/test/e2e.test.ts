@@ -415,6 +415,53 @@ test("/api/today: checkin with 2 active missions plans and creates one main task
   );
 });
 
+test("/api/mentor: 2 active missions, no missionId, falls back to multi-goal summary and still succeeds", async () => {
+  // Fresh telegram_id, same reasoning as the /api/today multi-mission test
+  // above: keeps this independent of the shared owner's seeded single
+  // mission and mentor history.
+  const telegramId = "700111444";
+  const initData = buildTelegramInitData(telegramId, "Тест Мультицель Наставник");
+  const sameOriginHeaders = { "Sec-Fetch-Site": "same-origin" };
+  const authRes = await fetch(`${BASE}/api/auth/miniapp`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...sameOriginHeaders },
+    body: JSON.stringify({ initData }),
+  });
+  assert.equal(authRes.status, 200, "initData signed with the test bot token must authenticate");
+  const { userId } = (await authRes.json()) as { userId: string };
+  const setCookie = authRes.headers.get("set-cookie") ?? "";
+  const cookieHeader = setCookie.split(";")[0];
+  assert.ok(cookieHeader.startsWith("nevidimka_session="), "must receive a session cookie");
+
+  const db = await import("@nevidimka/db");
+  await db.createMission({
+    userId,
+    title: "Первая цель наставника",
+    directions: ["Тело"],
+    commitmentText: "Обещаю себе.",
+  });
+  await db.createMission({
+    userId,
+    title: "Вторая цель наставника",
+    directions: ["Смелость"],
+    commitmentText: "Обещаю себе.",
+  });
+  await db.closePool();
+
+  // No missionId in the body — with 2 active missions this must take the
+  // multi-goal summary branch (MentorChatMultiMissionContext) rather than
+  // erroring or guessing which mission the message is about.
+  const mentorRes = await fetch(`${BASE}/api/mentor`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Cookie: cookieHeader, ...sameOriginHeaders },
+    body: JSON.stringify({ message: "Как мне лучше распределить силы между целями?" }),
+  });
+  assert.equal(mentorRes.status, 200, "summary-mode mentor chat (2 active missions, no missionId) must not error");
+  const mentorBody = (await mentorRes.json()) as { ok: boolean; reply?: { content?: string } };
+  assert.equal(mentorBody.ok, true);
+  assert.ok(mentorBody.reply?.content, "a reply must come back even without a resolved single mission");
+});
+
 test("/analytics: 'что ты заметил' button triggers the behavior-analyst AI and renders a real observation", async () => {
   await page.goto(`${BASE}/analytics`, { waitUntil: "domcontentloaded" });
   assert.ok(await waitForText(page, "Что ты заметил?"));
