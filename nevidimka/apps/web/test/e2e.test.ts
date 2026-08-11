@@ -11,6 +11,7 @@ import { fileURLToPath } from "node:url";
 import { createHmac } from "node:crypto";
 import { chromium, type Browser, type Page } from "playwright";
 import pg from "pg";
+import { MAX_ACTIVE_MISSIONS } from "@nevidimka/shared-types";
 import { startMockAnthropic } from "./mock-anthropic.js";
 import { startMockTelegram } from "./mock-telegram.js";
 
@@ -585,6 +586,200 @@ test("/api/content/[id]: publish with 2 active missions and no missionId is reje
     [mission1.id, mission2.id].sort(),
     "error body must list the active missions so a future picker UI can be built against it"
   );
+});
+
+test("PATCH /api/missions/[id]: valid transition (active -> paused) succeeds", async () => {
+  const telegramId = "700111777";
+  const initData = buildTelegramInitData(telegramId, "Тест Мультицель Патч1");
+  const sameOriginHeaders = { "Sec-Fetch-Site": "same-origin" };
+  const authRes = await fetch(`${BASE}/api/auth/miniapp`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...sameOriginHeaders },
+    body: JSON.stringify({ initData }),
+  });
+  assert.equal(authRes.status, 200, "initData signed with the test bot token must authenticate");
+  const { userId } = (await authRes.json()) as { userId: string };
+  const setCookie = authRes.headers.get("set-cookie") ?? "";
+  const cookieHeader = setCookie.split(";")[0];
+  assert.ok(cookieHeader.startsWith("nevidimka_session="), "must receive a session cookie");
+
+  const db = await import("@nevidimka/db");
+  const mission = await db.createMission({
+    userId,
+    title: "Патч: цель на паузу",
+    directions: ["Тело"],
+    commitmentText: "Обещаю себе.",
+  });
+  await db.closePool();
+
+  const patchRes = await fetch(`${BASE}/api/missions/${mission.id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json", Cookie: cookieHeader, ...sameOriginHeaders },
+    body: JSON.stringify({ status: "paused" }),
+  });
+  assert.equal(patchRes.status, 200, "active -> paused is a valid transition and must succeed");
+  const patchBody = (await patchRes.json()) as { mission: { id: string; status: string } };
+  assert.equal(patchBody.mission.id, mission.id);
+  assert.equal(patchBody.mission.status, "paused");
+});
+
+test("PATCH /api/missions/[id]: invalid transition (completed -> active) is rejected with 409", async () => {
+  const telegramId = "700111778";
+  const initData = buildTelegramInitData(telegramId, "Тест Мультицель Патч2");
+  const sameOriginHeaders = { "Sec-Fetch-Site": "same-origin" };
+  const authRes = await fetch(`${BASE}/api/auth/miniapp`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...sameOriginHeaders },
+    body: JSON.stringify({ initData }),
+  });
+  assert.equal(authRes.status, 200, "initData signed with the test bot token must authenticate");
+  const { userId } = (await authRes.json()) as { userId: string };
+  const setCookie = authRes.headers.get("set-cookie") ?? "";
+  const cookieHeader = setCookie.split(";")[0];
+  assert.ok(cookieHeader.startsWith("nevidimka_session="), "must receive a session cookie");
+
+  const db = await import("@nevidimka/db");
+  const mission = await db.createMission({
+    userId,
+    title: "Патч: недопустимый переход",
+    directions: ["Тело"],
+    commitmentText: "Обещаю себе.",
+  });
+  await db.closePool();
+
+  // First bring it to 'completed' (a valid active -> completed transition,
+  // per VALID_TRANSITIONS), then attempt completed -> active, which
+  // VALID_TRANSITIONS does not allow (completed's transition list is empty).
+  const completeRes = await fetch(`${BASE}/api/missions/${mission.id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json", Cookie: cookieHeader, ...sameOriginHeaders },
+    body: JSON.stringify({ status: "completed" }),
+  });
+  assert.equal(completeRes.status, 200, "active -> completed must succeed as a setup step");
+
+  const reactivateRes = await fetch(`${BASE}/api/missions/${mission.id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json", Cookie: cookieHeader, ...sameOriginHeaders },
+    body: JSON.stringify({ status: "active" }),
+  });
+  assert.equal(
+    reactivateRes.status,
+    409,
+    "completed -> active is not in VALID_TRANSITIONS and must be rejected, not silently applied"
+  );
+  const reactivateBody = (await reactivateRes.json()) as { code: string };
+  assert.equal(reactivateBody.code, "INVALID_TRANSITION");
+});
+
+test("PATCH /api/missions/[id]: reactivating a paused mission at the active-mission cap is rejected with a 409, not a 500", async () => {
+  const telegramId = "700111779";
+  const initData = buildTelegramInitData(telegramId, "Тест Мультицель Патч3");
+  const sameOriginHeaders = { "Sec-Fetch-Site": "same-origin" };
+  const authRes = await fetch(`${BASE}/api/auth/miniapp`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...sameOriginHeaders },
+    body: JSON.stringify({ initData }),
+  });
+  assert.equal(authRes.status, 200, "initData signed with the test bot token must authenticate");
+  const { userId } = (await authRes.json()) as { userId: string };
+  const setCookie = authRes.headers.get("set-cookie") ?? "";
+  const cookieHeader = setCookie.split(";")[0];
+  assert.ok(cookieHeader.startsWith("nevidimka_session="), "must receive a session cookie");
+
+  const db = await import("@nevidimka/db");
+  // Build up to MAX_ACTIVE_MISSIONS active missions plus one paused mission,
+  // without ever exceeding the cap mid-setup: create the mission that will
+  // end up paused first, then pause it (freeing a slot) before creating the
+  // final active mission that takes its place. End state: MAX_ACTIVE_MISSIONS
+  // active + 1 paused (the one we'll try to reactivate).
+  const toBePaused = await db.createMission({
+    userId,
+    title: "Патч: будет на паузе",
+    directions: ["Тело"],
+    commitmentText: "Обещаю себе.",
+  });
+  for (let i = 1; i < MAX_ACTIVE_MISSIONS; i++) {
+    await db.createMission({
+      userId,
+      title: `Патч: активная ${i}`,
+      directions: ["Смелость"],
+      commitmentText: "Обещаю себе.",
+    });
+  }
+  await db.updateMissionStatus(userId, toBePaused.id, "paused");
+  await db.createMission({
+    userId,
+    title: "Патч: активная последняя",
+    directions: ["Создание"],
+    commitmentText: "Обещаю себе.",
+  });
+
+  const activeMissions = await db.getActiveMissions(userId);
+  assert.equal(
+    activeMissions.length,
+    MAX_ACTIVE_MISSIONS,
+    "setup must land exactly at the cap before attempting reactivation"
+  );
+  await db.closePool();
+
+  const reactivateRes = await fetch(`${BASE}/api/missions/${toBePaused.id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json", Cookie: cookieHeader, ...sameOriginHeaders },
+    body: JSON.stringify({ status: "active" }),
+  });
+  assert.equal(
+    reactivateRes.status,
+    409,
+    "reactivating at the cap must surface as a 409 (the enforce_active_mission_limit trigger's check_violation), not an unhandled 500"
+  );
+  const reactivateBody = (await reactivateRes.json()) as { code: string };
+  assert.equal(reactivateBody.code, "ACTIVE_MISSION_CAP_EXCEEDED");
+});
+
+test("PATCH /api/missions/[id]: a missionId belonging to a different user 404s (not 403, no leak)", async () => {
+  const ownerTelegramId = "700111780";
+  const otherTelegramId = "700111781";
+  const sameOriginHeaders = { "Sec-Fetch-Site": "same-origin" };
+
+  const ownerAuthRes = await fetch(`${BASE}/api/auth/miniapp`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...sameOriginHeaders },
+    body: JSON.stringify({ initData: buildTelegramInitData(ownerTelegramId, "Владелец цели") }),
+  });
+  assert.equal(ownerAuthRes.status, 200);
+  const { userId: ownerUserId } = (await ownerAuthRes.json()) as { userId: string };
+
+  const otherAuthRes = await fetch(`${BASE}/api/auth/miniapp`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...sameOriginHeaders },
+    body: JSON.stringify({ initData: buildTelegramInitData(otherTelegramId, "Другой пользователь") }),
+  });
+  assert.equal(otherAuthRes.status, 200);
+  const otherSetCookie = otherAuthRes.headers.get("set-cookie") ?? "";
+  const otherCookieHeader = otherSetCookie.split(";")[0];
+  assert.ok(otherCookieHeader.startsWith("nevidimka_session="), "must receive a session cookie");
+
+  const db = await import("@nevidimka/db");
+  const ownerMission = await db.createMission({
+    userId: ownerUserId,
+    title: "Чужая цель",
+    directions: ["Тело"],
+    commitmentText: "Обещаю себе.",
+  });
+  await db.closePool();
+
+  const crossUserRes = await fetch(`${BASE}/api/missions/${ownerMission.id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json", Cookie: otherCookieHeader, ...sameOriginHeaders },
+    body: JSON.stringify({ status: "paused" }),
+  });
+  assert.equal(
+    crossUserRes.status,
+    404,
+    "a mission belonging to a different user must 404 (getMissionById is ownership-scoped), not 403 or leak existence"
+  );
+  const crossUserBody = (await crossUserRes.json()) as { code: string };
+  assert.equal(crossUserBody.code, "NOT_FOUND");
 });
 
 test("/analytics: 'что ты заметил' button triggers the behavior-analyst AI and renders a real observation", async () => {
