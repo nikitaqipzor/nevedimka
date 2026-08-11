@@ -8,6 +8,7 @@ import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { createHmac } from "node:crypto";
 import { chromium, type Browser, type Page } from "playwright";
 import pg from "pg";
 import { startMockAnthropic } from "./mock-anthropic.js";
@@ -69,6 +70,29 @@ async function warmUpRoutes(base: string, paths: string[]): Promise<void> {
   for (const path of paths) {
     await fetch(`${base}${path}`).catch(() => undefined);
   }
+}
+
+/**
+ * Signs a Telegram Mini App initData string per the algorithm
+ * apps/web/src/lib/telegramAuth.ts validates against, using the same
+ * TELEGRAM_BOT_TOKEN the dev server is spawned with below ("TEST:TOKEN") —
+ * lets a fetch-only test log in as an arbitrary telegram_id without a
+ * browser, independently of the shared OWNER_TELEGRAM_ID user other tests
+ * mutate (including one that deletes it outright).
+ */
+function buildTelegramInitData(telegramId: string, firstName: string): string {
+  const authDate = Math.floor(Date.now() / 1000);
+  const params = new URLSearchParams();
+  params.set("auth_date", String(authDate));
+  params.set("user", JSON.stringify({ id: Number(telegramId), first_name: firstName }));
+  const dataCheckString = [...params.entries()]
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+    .map(([key, value]) => `${key}=${value}`)
+    .join("\n");
+  const secretKey = createHmac("sha256", "WebAppData").update("TEST:TOKEN").digest();
+  const hash = createHmac("sha256", secretKey).update(dataCheckString).digest("hex");
+  params.set("hash", hash);
+  return params.toString();
 }
 
 before(async () => {
@@ -321,6 +345,74 @@ test("/api/video/[id]/file: real HTTP Range support (206 Partial Content, correc
   assert.equal(fullRes.status, 200, "no Range header must still serve the full file normally");
   assert.equal(fullRes.headers.get("accept-ranges"), "bytes", "must advertise range support even on a full response");
   assert.equal(await fullRes.text(), "placeholder");
+});
+
+test("/api/today: checkin with 2 active missions plans and creates one main task per mission", async () => {
+  // A fresh telegram_id (not OWNER_TELEGRAM_ID), signed in via real initData
+  // rather than reusing the shared owner's browser cookies — the owner
+  // already has a today-plan seeded in before() (and a later test deletes
+  // the owner outright), so a separate user keeps this assertion ("exactly
+  // 2 tasks, one per mission") independent of both.
+  const telegramId = "700111333";
+  const initData = buildTelegramInitData(telegramId, "Тест Мультицель");
+  // middleware.ts CSRF-gates every non-GET /api/* route on Sec-Fetch-Site
+  // (see lib/csrf.ts) — real browsers set this automatically, but Node's
+  // fetch() does not, so it has to be supplied explicitly here (unlike a
+  // browser's fetch, Node's does not forbid setting Sec-Fetch-* headers).
+  const sameOriginHeaders = { "Sec-Fetch-Site": "same-origin" };
+  const authRes = await fetch(`${BASE}/api/auth/miniapp`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...sameOriginHeaders },
+    body: JSON.stringify({ initData }),
+  });
+  assert.equal(authRes.status, 200, "initData signed with the test bot token must authenticate");
+  const { userId } = (await authRes.json()) as { userId: string };
+  const setCookie = authRes.headers.get("set-cookie") ?? "";
+  const cookieHeader = setCookie.split(";")[0];
+  assert.ok(cookieHeader.startsWith("nevidimka_session="), "must receive a session cookie");
+
+  const db = await import("@nevidimka/db");
+  const mission1 = await db.createMission({
+    userId,
+    title: "Первая цель",
+    directions: ["Тело"],
+    commitmentText: "Обещаю себе.",
+  });
+  const mission2 = await db.createMission({
+    userId,
+    title: "Вторая цель",
+    directions: ["Смелость"],
+    commitmentText: "Обещаю себе.",
+  });
+  await db.closePool();
+
+  const checkinRes = await fetch(`${BASE}/api/today`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Cookie: cookieHeader, ...sameOriginHeaders },
+    body: JSON.stringify({ action: "checkin", sleepQuality: 4, energy: 4, mood: 3, stress: 2 }),
+  });
+  assert.equal(checkinRes.status, 200, "checkin with 2 active missions must succeed, not error");
+  const checkinBody = await checkinRes.json();
+  assert.equal(checkinBody.ok, true);
+
+  const todayRes = await fetch(`${BASE}/api/today`, { headers: { Cookie: cookieHeader } });
+  assert.equal(todayRes.status, 200);
+  const today = (await todayRes.json()) as {
+    state: string;
+    missions: { id: string; title: string }[];
+    tasks: { missionId?: string; isMainTask: boolean }[];
+  };
+  assert.equal(today.state, "ready", "a main task exists for every active mission, so the day must read as planned");
+  assert.equal(today.missions.length, 2, "response must list both active missions");
+
+  const mainTasks = today.tasks.filter((t) => t.isMainTask);
+  assert.equal(mainTasks.length, 2, "must create exactly one main task per active mission");
+  const taskMissionIds = mainTasks.map((t) => t.missionId).sort();
+  assert.deepEqual(
+    taskMissionIds,
+    [mission1.id, mission2.id].sort(),
+    "each main task's missionId must match one of the 2 active missions"
+  );
 });
 
 test("/analytics: 'что ты заметил' button triggers the behavior-analyst AI and renders a real observation", async () => {
