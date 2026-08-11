@@ -519,6 +519,74 @@ test("/api/path: 2 active missions, no missionId, returns list mode with both go
   assert.equal(detail.mission.title, "Путь: вторая цель", "detail mode must be keyed off the requested missionId, not just 'the' active mission");
 });
 
+test("/api/content/[id]: publish with 2 active missions and no missionId is rejected with a 4xx listing the active missions", async () => {
+  // Fresh telegram_id, same reasoning as the other multi-mission tests above:
+  // keeps this independent of the shared owner's single seeded mission and
+  // publications.
+  const telegramId = "700111666";
+  const initData = buildTelegramInitData(telegramId, "Тест Мультицель Публикация");
+  const sameOriginHeaders = { "Sec-Fetch-Site": "same-origin" };
+  const authRes = await fetch(`${BASE}/api/auth/miniapp`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...sameOriginHeaders },
+    body: JSON.stringify({ initData }),
+  });
+  assert.equal(authRes.status, 200, "initData signed with the test bot token must authenticate");
+  const { userId } = (await authRes.json()) as { userId: string };
+  const setCookie = authRes.headers.get("set-cookie") ?? "";
+  const cookieHeader = setCookie.split(";")[0];
+  assert.ok(cookieHeader.startsWith("nevidimka_session="), "must receive a session cookie");
+
+  const db = await import("@nevidimka/db");
+  const mission1 = await db.createMission({
+    userId,
+    title: "Публикация: первая цель",
+    directions: ["Тело"],
+    commitmentText: "Обещаю себе.",
+  });
+  const mission2 = await db.createMission({
+    userId,
+    title: "Публикация: вторая цель",
+    directions: ["Смелость"],
+    commitmentText: "Обещаю себе.",
+  });
+  const draft = await db.createContentDraft({ userId, sourceText: "Текст для публикации." });
+  const version = await db.addContentVersion({
+    userId,
+    draftId: draft.id,
+    step: "final",
+    text: "Текст для публикации.",
+  });
+  await db.setChosenVersion(userId, draft.id, version.id);
+  await db.closePool();
+
+  // No missionId in the body — with 2 active missions this is genuinely
+  // ambiguous (ContentDraft carries no missionId of its own, see the comment
+  // in the "publish" case of apps/web/src/app/api/content/[id]/route.ts), so
+  // the route must reject with a clear 4xx rather than guessing which
+  // mission's day-N/program length to attribute the post to.
+  const publishRes = await fetch(`${BASE}/api/content/${draft.id}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Cookie: cookieHeader, ...sameOriginHeaders },
+    body: JSON.stringify({ action: "publish" }),
+  });
+  assert.equal(
+    publishRes.status,
+    400,
+    "publish with 2 active missions and no missionId must be rejected with a 4xx, not guess or crash"
+  );
+  const publishBody = (await publishRes.json()) as {
+    code: string;
+    missions: { id: string; title: string }[];
+  };
+  assert.equal(publishBody.code, "MISSION_ID_REQUIRED");
+  assert.deepEqual(
+    publishBody.missions.map((m) => m.id).sort(),
+    [mission1.id, mission2.id].sort(),
+    "error body must list the active missions so a future picker UI can be built against it"
+  );
+});
+
 test("/analytics: 'что ты заметил' button triggers the behavior-analyst AI and renders a real observation", async () => {
   await page.goto(`${BASE}/analytics`, { waitUntil: "domcontentloaded" });
   assert.ok(await waitForText(page, "Что ты заметил?"));
