@@ -140,16 +140,30 @@ export async function draftMission(
   return { output, tokensIn: result.tokensIn, tokensOut: result.tokensOut, costUsd: result.costUsd };
 }
 
+/** Context for the common case: one specific mission has been resolved
+ * (the user has exactly one active mission, or explicitly selected one
+ * via `missionId`). Unchanged shape from the pre-multi-goal single-mission
+ * context. */
+export interface MentorChatSingleMissionContext {
+  missionTitle: string;
+  dayNumber: number;
+  programLength: number;
+  yesterdayMainTaskTitle?: string;
+  yesterdayCompletionPercent?: number | null;
+  todayMainTaskTitle?: string;
+  todayMainTaskStatus?: string;
+}
+
+/** Context when 2+ missions are active and the caller didn't pick one via
+ * `missionId` — rather than forcing a selection on every chat message, the
+ * mentor gets a plain list of titles so it can still respond sensibly
+ * (e.g. ask which goal the user means, or speak generally). */
+export interface MentorChatMultiMissionContext {
+  activeMissionTitles: string[];
+}
+
 export interface MentorChatInput {
-  context: {
-    missionTitle: string;
-    dayNumber: number;
-    programLength: number;
-    yesterdayMainTaskTitle?: string;
-    yesterdayCompletionPercent?: number | null;
-    todayMainTaskTitle?: string;
-    todayMainTaskStatus?: string;
-  };
+  context: MentorChatSingleMissionContext | MentorChatMultiMissionContext;
   history: { role: "user" | "assistant"; content: string }[];
   message: string;
 }
