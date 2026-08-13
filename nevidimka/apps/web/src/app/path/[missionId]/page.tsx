@@ -5,7 +5,9 @@ import { useParams, useRouter } from "next/navigation";
 import type { MilestoneView } from "@nevidimka/shared-types";
 import { ApiError, apiFetch } from "@/lib/apiClient";
 import { DayGauge } from "@/components/DayGauge";
-import { EmptyState, Eyebrow, Panel } from "@/components/ui";
+import { EmptyState, Eyebrow, GhostButton, Panel, PrimaryButton } from "@/components/ui";
+
+type ActionStatus = "completed" | "paused";
 
 interface PathDetailResponse {
   state: "ready";
@@ -29,10 +31,34 @@ export default function PathDetailPage() {
   const router = useRouter();
   const [data, setData] = useState<PathDetailResponse | null>(null);
   const [notFound, setNotFound] = useState(false);
+  const [confirmingStatus, setConfirmingStatus] = useState<ActionStatus | null>(null);
+  const [actionPending, setActionPending] = useState<ActionStatus | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+
+  async function applyStatus(status: ActionStatus) {
+    setActionPending(status);
+    setActionError(null);
+    try {
+      await apiFetch(`/api/missions/${params.missionId}`, {
+        method: "PATCH",
+        body: JSON.stringify({ status }),
+      });
+      router.push("/path");
+    } catch (err) {
+      setActionError(
+        err instanceof ApiError ? err.message : "Не удалось изменить статус цели."
+      );
+      setActionPending(null);
+      setConfirmingStatus(null);
+    }
+  }
 
   useEffect(() => {
     setData(null);
     setNotFound(false);
+    setConfirmingStatus(null);
+    setActionPending(null);
+    setActionError(null);
     apiFetch<PathDetailResponse>(`/api/path?missionId=${params.missionId}`)
       .then(setData)
       .catch((err) => {
@@ -114,6 +140,57 @@ export default function PathDetailPage() {
           )}
         </div>
       </div>
+
+      <Panel className="mt-6 mb-6">
+        <Eyebrow>Действия</Eyebrow>
+        {actionError && <div className="mt-2 text-xs text-warn">{actionError}</div>}
+        {confirmingStatus ? (
+          <div className="mt-3 rounded-sm border border-line p-3">
+            <p className="text-xs text-ink-dim">
+              {confirmingStatus === "completed"
+                ? "Отметить цель как завершённую? Она уйдёт из активных."
+                : "Отложить цель? Она уйдёт из активных, вернуть её можно будет позже."}
+            </p>
+            <div className="mt-3 flex gap-2">
+              <PrimaryButton
+                className="flex-1"
+                disabled={actionPending !== null}
+                onClick={() => applyStatus(confirmingStatus)}
+              >
+                {actionPending ? "Сохраняю…" : "Подтвердить"}
+              </PrimaryButton>
+              <GhostButton
+                className="flex-1"
+                disabled={actionPending !== null}
+                onClick={() => setConfirmingStatus(null)}
+              >
+                Отмена
+              </GhostButton>
+            </div>
+          </div>
+        ) : (
+          <div className="mt-3 flex gap-2">
+            <PrimaryButton
+              className="flex-1"
+              onClick={() => {
+                setActionError(null);
+                setConfirmingStatus("completed");
+              }}
+            >
+              Завершить
+            </PrimaryButton>
+            <GhostButton
+              className="flex-1"
+              onClick={() => {
+                setActionError(null);
+                setConfirmingStatus("paused");
+              }}
+            >
+              Отложить
+            </GhostButton>
+          </div>
+        )}
+      </Panel>
     </div>
   );
 }
