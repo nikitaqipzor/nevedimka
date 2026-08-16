@@ -8,7 +8,14 @@ import type { AddressInfo } from "node:net";
  * match that role's zod schema.
  */
 export function startMockAnthropic(): Promise<{ url: string; close: () => Promise<void> }> {
-  function pickResponse(system: string): unknown {
+  // Takes the whole request payload (not just `system`) because the day
+  // planner branch below needs to read the caller's `missions` array out of
+  // the user message to echo back a matching `mission_id` per plan — the
+  // MultiMissionDayPlannerOutputSchema's refine() rejects any mission_id
+  // that wasn't in the request, and the route silently skips (and doesn't
+  // create a task for) any mission_id it doesn't recognize.
+  function pickResponse(payload: { system?: string; messages?: Array<{ content?: unknown }> }): unknown {
+    const system = payload.system ?? "";
     if (system.includes("наставник действий")) {
       return {
         first_step: "Открыть файл и написать первую функцию",
@@ -17,11 +24,28 @@ export function startMockAnthropic(): Promise<{ url: string; close: () => Promis
       };
     }
     if (system.includes("планировщик дня")) {
+      // planDay (single-mission) was removed — planDayForMissions is the
+      // only caller left, so this always returns the multi-mission
+      // `{ plans: [...] }` shape, one entry per mission in the request.
+      let missionIds: string[] = [];
+      try {
+        const rawContent = payload.messages?.[0]?.content;
+        const input = typeof rawContent === "string" ? JSON.parse(rawContent) : rawContent;
+        if (input && Array.isArray(input.missions)) {
+          missionIds = input.missions.map((m: { missionId: string }) => m.missionId);
+        }
+      } catch {
+        // fall through with an empty list — an empty `plans` array will
+        // fail MultiMissionDayPlannerOutputSchema's min(1), surfacing as a
+        // clear parse error rather than silently misbehaving.
+      }
       return {
-        summary: "Никита, день 1 из 180. Сегодня закладываем основу. Главная задача — начать проект.",
-        main_task: { title: "Настроить окружение проекта", estimate_minutes: 45, direction: "Создание" },
-        additional_tasks: [{ title: "10 минут растяжки", estimate_minutes: 10, direction: "Тело" }],
-        reasoning_note: "Начинаем мягко, чтобы не перегореть в первый день.",
+        plans: missionIds.map((missionId, i) => ({
+          mission_id: missionId,
+          summary: `Никита, день ${i + 1}. Сегодня закладываем основу. Главная задача — начать проект.`,
+          main_task: { title: `Настроить окружение проекта ${i + 1}`, estimate_minutes: 45, direction: "Создание" },
+          reasoning_note: "Начинаем мягко, чтобы не перегореть в первый день.",
+        })),
       };
     }
     if (system.includes("режиме свободного диалога") || system.includes("AI-наставник")) {
@@ -60,7 +84,7 @@ export function startMockAnthropic(): Promise<{ url: string; close: () => Promis
       const payload = JSON.parse(body);
       let outputObj: unknown;
       try {
-        outputObj = pickResponse(payload.system ?? "");
+        outputObj = pickResponse(payload);
       } catch (err) {
         res.statusCode = 500;
         res.end(JSON.stringify({ type: "error", error: { message: (err as Error).message } }));
