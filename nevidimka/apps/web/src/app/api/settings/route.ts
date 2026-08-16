@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getUserById, setReminderHours, setTimezone } from "@nevidimka/db";
+import { getActiveMissions, getUserById, setReminderHours, setTimezone } from "@nevidimka/db";
 import { requireSession } from "@/lib/session";
 
 function isValidTimezone(tz: string): boolean {
@@ -15,15 +15,23 @@ export async function GET(): Promise<NextResponse> {
   const session = await requireSession();
   if (session instanceof NextResponse) return session;
 
-  const user = await getUserById(session.userId);
+  const [user, missions] = await Promise.all([getUserById(session.userId), getActiveMissions(session.userId)]);
   if (!user) return NextResponse.json({ code: "USER_NOT_FOUND" }, { status: 404 });
+
+  // day0Date/programLength now live per-mission, not on User. A user can have
+  // N simultaneously-active missions with no single "the" program length, so
+  // (same convention as handleToday in apps/bot) we show the oldest active
+  // mission (missions[0], per getActiveMissions' stable created_at ordering)
+  // as representative here. With zero active missions there's nothing to
+  // show, so both come back null rather than throwing or faking a default.
+  const primaryMission = missions.length > 0 ? missions[0] : null;
 
   return NextResponse.json({
     timezone: user.timezone,
     reminderHourMorning: user.reminderHourMorning ?? null,
     reminderHourEvening: user.reminderHourEvening ?? null,
-    programLength: user.programLength,
-    day0Date: user.day0Date,
+    programLength: primaryMission?.programLength ?? null,
+    day0Date: primaryMission?.day0Date ?? null,
     channelId: user.channelId ?? null,
   });
 }

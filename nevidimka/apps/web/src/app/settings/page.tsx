@@ -8,8 +8,8 @@ interface SettingsResponse {
   timezone: string;
   reminderHourMorning: number | null;
   reminderHourEvening: number | null;
-  programLength: number;
-  day0Date: string;
+  programLength: number | null;
+  day0Date: string | null;
   channelId: string | null;
 }
 
@@ -232,7 +232,9 @@ export default function SettingsPage() {
       <Panel className="mt-3">
         <div className="text-sm text-ink">Путь</div>
         <div className="mt-1 text-xs text-ink-faint">
-          День 0: {data.day0Date} · длительность: {data.programLength} дней
+          {data.day0Date !== null && data.programLength !== null
+            ? `День 0: ${data.day0Date} · длительность: ${data.programLength} дней`
+            : "Нет активной цели."}
         </div>
       </Panel>
 
