@@ -10,6 +10,7 @@ import assert from "node:assert/strict";
 import pg from "pg";
 import type { Bot } from "grammy";
 import type { Update } from "grammy/types";
+import { MAX_ACTIVE_MISSIONS } from "@nevidimka/shared-types";
 import { startMockAnthropic } from "./mock-anthropic.js";
 import { startMockTelegram, lastBotReply, type MockTelegramCall } from "./mock-telegram.js";
 import { addDaysToDateString, todayInTimezone } from "../src/utils/dates.js";
@@ -17,6 +18,12 @@ import { addDaysToDateString, todayInTimezone } from "../src/utils/dates.js";
 const ADMIN_URL = process.env.DATABASE_URL ?? "postgres://postgres:postgres@localhost:5432/postgres";
 const TEST_DB = "nevidimka_bot_full_flow_test";
 const CHAT_ID = 555000111;
+// Separate chat ids for Task 18's multi-goal scenarios below, so they run as
+// their own independent users rather than interleaving with CHAT_ID's
+// carefully-sequenced single-mission story above (which already has a plan
+// for "today" and a reported/postponed task by the time those tests run).
+const CHAT_ID_TWO_GOALS = 555000222;
+const CHAT_ID_CAP = 555000333;
 
 function urlForDb(dbName: string): string {
   const u = new URL(ADMIN_URL);
@@ -25,14 +32,14 @@ function urlForDb(dbName: string): string {
 }
 
 let updateId = 1;
-function textUpdate(text: string): Update {
+function textUpdate(text: string, chatId: number = CHAT_ID): Update {
   return {
     update_id: updateId++,
     message: {
       message_id: updateId,
       date: Math.floor(Date.now() / 1000),
-      chat: { id: CHAT_ID, type: "private", first_name: "Никита" },
-      from: { id: CHAT_ID, is_bot: false, first_name: "Никита" },
+      chat: { id: chatId, type: "private", first_name: "Никита" },
+      from: { id: chatId, is_bot: false, first_name: "Никита" },
       text,
       ...(text.startsWith("/")
         ? { entities: [{ type: "bot_command", offset: 0, length: text.split(" ")[0].length }] }
@@ -40,16 +47,16 @@ function textUpdate(text: string): Update {
     },
   } as unknown as Update;
 }
-function callbackUpdate(data: string): Update {
+function callbackUpdate(data: string, chatId: number = CHAT_ID): Update {
   return {
     update_id: updateId++,
     callback_query: {
       id: `cb${updateId}`,
-      from: { id: CHAT_ID, is_bot: false, first_name: "Никита" },
+      from: { id: chatId, is_bot: false, first_name: "Никита" },
       message: {
         message_id: updateId,
         date: Math.floor(Date.now() / 1000),
-        chat: { id: CHAT_ID, type: "private", first_name: "Никита" },
+        chat: { id: chatId, type: "private", first_name: "Никита" },
         from: { id: 1, is_bot: true, first_name: "Test" },
         text: "...",
       },
@@ -57,6 +64,31 @@ function callbackUpdate(data: string): Update {
       data,
     },
   } as unknown as Update;
+}
+
+/**
+ * Walks one chat through the full onboarding flow (Day 0 confirm ->
+ * commitment -> goal -> program length -> directions -> AI strategist draft
+ * -> accept), producing one new active mission. Mirrors the
+ * "onboarding: Day 0 button -> ... -> accept" test above step by step,
+ * factored out so the multi-goal scenarios below can drive it repeatedly —
+ * once per goal, and again per cap-scenario mission — without retyping the
+ * whole sequence each time. Assumes the triggering command (/start or
+ * /addgoal) was already sent and produced the Day 0 confirm keyboard.
+ */
+async function completeOnboardingFlow(
+  chatId: number,
+  opts: { commitmentText: string; goalText: string; programLength: 180 | 365; directions: string[] }
+): Promise<void> {
+  await bot.handleUpdate(callbackUpdate("onboarding:day0_confirm", chatId));
+  await bot.handleUpdate(textUpdate(opts.commitmentText, chatId));
+  await bot.handleUpdate(textUpdate(opts.goalText, chatId));
+  await bot.handleUpdate(callbackUpdate(`onboarding:length:${opts.programLength}`, chatId));
+  for (const direction of opts.directions) {
+    await bot.handleUpdate(callbackUpdate(`onboarding:dir_toggle:${direction}`, chatId));
+  }
+  await bot.handleUpdate(callbackUpdate("onboarding:dir_done", chatId));
+  await bot.handleUpdate(callbackUpdate("onboarding:mission_accept", chatId));
 }
 
 let bot: Bot<any>;
@@ -67,6 +99,12 @@ let db: typeof import("@nevidimka/db");
 let userId: string;
 let mainTaskId: string;
 let draftId: string;
+// State shared between the two-goal /today scenario and the report-against-
+// the-second-goal scenario immediately below it (both run against
+// CHAT_ID_TWO_GOALS) — see the comments on those tests.
+let userIdTwoGoals: string;
+let missionOneId: string;
+let missionTwoId: string;
 
 async function dbRows(sql: string): Promise<any[]> {
   const client = new pg.Client({ connectionString: urlForDb(TEST_DB) });
@@ -407,4 +445,191 @@ test("/delete: wrong confirmation text cancels, correct text deletes everything 
   assert.equal(missionsAfter.length, 0, "cascade must have deleted this user's missions");
   const publicationsAfter = await dbRows(`select 1 from publications where user_id = '${userId}'`);
   assert.equal(publicationsAfter.length, 0, "cascade must have deleted this user's publications");
+});
+
+// --- Task 18: multi-goal /today, cap+pause-frees-slot, per-goal reporting --
+// Runs as its own independent chat (CHAT_ID_TWO_GOALS) rather than
+// continuing CHAT_ID's story above: by this point CHAT_ID already has a
+// plan for "today" with an already-reported/postponed task, and
+// handleToday only ever plans missions once per calendar day (see
+// buildExistingPlanMessage's early return in today.ts) — a mission added to
+// CHAT_ID after today's plan already exists would never get its own task
+// planned today. A fresh chat sidesteps that entirely.
+
+test("multi-goal /today: onboard goal #1, /addgoal for goal #2, /today groups one task per goal", async () => {
+  await bot.handleUpdate(textUpdate("/start", CHAT_ID_TWO_GOALS));
+  const users = await dbRows(`select * from users where telegram_id = '${CHAT_ID_TWO_GOALS}'`);
+  assert.equal(users.length, 1);
+  userIdTwoGoals = users[0].id;
+
+  await completeOnboardingFlow(CHAT_ID_TWO_GOALS, {
+    commitmentText: "Обещаю себе закончить первую цель.",
+    goalText: "Запустить свой продукт.",
+    programLength: 180,
+    directions: ["Создание"],
+  });
+
+  let activeMissions = await dbRows(
+    `select * from missions where user_id = '${userIdTwoGoals}' and status = 'active' order by created_at asc, id asc`
+  );
+  assert.equal(activeMissions.length, 1, "goal #1 must be active after onboarding");
+
+  // /addgoal is the new entry point (built in a prior task) for a second
+  // goal — same cap-aware startOnboarding as /start, just re-entered while a
+  // mission is already active. Below the cap, it must start a fresh Day 0
+  // flow, not the cap-reached menu.
+  await bot.handleUpdate(textUpdate("/addgoal", CHAT_ID_TWO_GOALS));
+  assert.match(
+    lastBotReply(tgCalls) ?? "",
+    /Дня 0/,
+    "/addgoal below the cap must start a fresh onboarding, not the cap menu"
+  );
+
+  await completeOnboardingFlow(CHAT_ID_TWO_GOALS, {
+    commitmentText: "Обещаю себе бегать по утрам регулярно.",
+    goalText: "Начать бегать по утрам.",
+    programLength: 365,
+    directions: ["Тело"],
+  });
+
+  activeMissions = await dbRows(
+    `select * from missions where user_id = '${userIdTwoGoals}' and status = 'active' order by created_at asc, id asc`
+  );
+  assert.equal(activeMissions.length, 2, "must now have two active goals");
+  missionOneId = activeMissions[0].id;
+  missionTwoId = activeMissions[1].id;
+
+  await bot.handleUpdate(textUpdate("/today", CHAT_ID_TWO_GOALS));
+  await bot.handleUpdate(textUpdate("4 3 4 2", CHAT_ID_TWO_GOALS));
+
+  const tasks = await dbRows(
+    `select * from tasks where user_id = '${userIdTwoGoals}' and is_main_task = true order by created_at asc`
+  );
+  assert.equal(tasks.length, 2, "one main task must be planned per active goal, not one for the whole plan");
+  const taskMissionIds = tasks.map((t: any) => t.mission_id).sort();
+  assert.deepEqual(
+    taskMissionIds,
+    [missionOneId, missionTwoId].sort(),
+    "each task must be attributed to a distinct active mission"
+  );
+
+  const reply = lastBotReply(tgCalls) ?? "";
+  const goalMarkers = reply.match(/🎯/g) ?? [];
+  assert.equal(goalMarkers.length, 2, "the /today reply must render one grouped block per goal");
+});
+
+test("report scenario: reporting the SECOND goal's task records it against that goal's mission_id", async () => {
+  const missionTwoTasks = await dbRows(
+    `select * from tasks where user_id = '${userIdTwoGoals}' and mission_id = '${missionTwoId}' and is_main_task = true`
+  );
+  assert.equal(missionTwoTasks.length, 1, "goal #2 must have its own main task from the grouped /today plan above");
+  const missionTwoTaskId = missionTwoTasks[0].id;
+
+  // Report against the SECOND goal's task, not the first/"primary" one.
+  await bot.handleUpdate(callbackUpdate(`report:${missionTwoTaskId}`, CHAT_ID_TWO_GOALS));
+  await bot.handleUpdate(textUpdate("Пробежал утром, план на сегодня выполнен.", CHAT_ID_TWO_GOALS));
+
+  const evidences = await dbRows(
+    `select * from evidences where user_id = '${userIdTwoGoals}' and task_id = '${missionTwoTaskId}'`
+  );
+  assert.equal(evidences.length, 1, "the report must be accepted and recorded as evidence for the second goal's task");
+
+  const taskAfter = await dbRows(`select * from tasks where id = '${missionTwoTaskId}'`);
+  assert.equal(
+    taskAfter[0].mission_id,
+    missionTwoId,
+    "the reported task must stay attributed to the second (non-primary) goal's mission_id"
+  );
+  assert.ok(
+    ["done", "partially_done"].includes(taskAfter[0].status),
+    "the AI reviewer's completion percent must have updated the second goal's task status"
+  );
+
+  // The FIRST goal's task must be entirely unaffected by a report filed
+  // against the second goal's task.
+  const missionOneTasks = await dbRows(
+    `select * from tasks where user_id = '${userIdTwoGoals}' and mission_id = '${missionOneId}' and is_main_task = true`
+  );
+  assert.equal(missionOneTasks.length, 1);
+  assert.equal(
+    missionOneTasks[0].status,
+    "planned",
+    "the first goal's task must be untouched by a report filed against the second goal's task"
+  );
+});
+
+test("cap scenario: 6th goal attempt shows Завершить/Отложить menu; pausing one frees a slot", async () => {
+  await bot.handleUpdate(textUpdate("/start", CHAT_ID_CAP));
+  const users = await dbRows(`select * from users where telegram_id = '${CHAT_ID_CAP}'`);
+  assert.equal(users.length, 1);
+  const userIdCap = users[0].id;
+
+  for (let i = 1; i <= MAX_ACTIVE_MISSIONS; i++) {
+    if (i > 1) {
+      await bot.handleUpdate(textUpdate("/addgoal", CHAT_ID_CAP));
+    }
+    await completeOnboardingFlow(CHAT_ID_CAP, {
+      commitmentText: `Обещаю себе довести цель номер ${i} до конца.`,
+      goalText: `Цель номер ${i}.`,
+      programLength: 180,
+      directions: ["Создание"],
+    });
+  }
+
+  let activeMissions = await dbRows(
+    `select * from missions where user_id = '${userIdCap}' and status = 'active' order by created_at asc, id asc`
+  );
+  assert.equal(activeMissions.length, MAX_ACTIVE_MISSIONS, "must be sitting exactly at the cap after 5 goals");
+
+  // A 6th attempt must refuse with the cap-reached menu, not a dead end.
+  await bot.handleUpdate(textUpdate("/addgoal", CHAT_ID_CAP));
+  assert.match(lastBotReply(tgCalls) ?? "", /максимум/i);
+
+  const capMenuCall = tgCalls.filter((c) => c.method === "sendMessage").slice(-1)[0];
+  const capKeyboard = (capMenuCall?.payload.reply_markup as any)?.inline_keyboard as
+    | { text: string; callback_data: string }[][]
+    | undefined;
+  assert.ok(capKeyboard, "the refusal must include an inline keyboard, not leave the user at a dead end");
+  const capButtons = capKeyboard.flat();
+  assert.equal(
+    capButtons.length,
+    MAX_ACTIVE_MISSIONS * 2,
+    "one Завершить + one Отложить button per active mission"
+  );
+  assert.ok(capButtons.every((b) => /^(Завершить|Отложить): /.test(b.text)));
+
+  const missionToPause = activeMissions[0];
+  const pauseButton = capButtons.find((b) => b.callback_data === `mission_pause:${missionToPause.id}`);
+  assert.ok(pauseButton, "menu must include an Отложить button targeting the mission we're about to pause");
+
+  // Pick "Отложить" on one of the active missions.
+  await bot.handleUpdate(callbackUpdate(`mission_pause:${missionToPause.id}`, CHAT_ID_CAP));
+  assert.match(lastBotReply(tgCalls) ?? "", /отложена/);
+
+  const missionAfterPause = await dbRows(`select status from missions where id = '${missionToPause.id}'`);
+  assert.equal(missionAfterPause[0].status, "paused");
+
+  activeMissions = await dbRows(`select * from missions where user_id = '${userIdCap}' and status = 'active'`);
+  assert.equal(activeMissions.length, MAX_ACTIVE_MISSIONS - 1, "pausing one goal must free a slot");
+
+  // The freed slot must actually be usable: a 6th active goal can now be added.
+  await bot.handleUpdate(textUpdate("/addgoal", CHAT_ID_CAP));
+  assert.match(
+    lastBotReply(tgCalls) ?? "",
+    /Дня 0/,
+    "with a slot free, /addgoal must start onboarding again, not the cap menu"
+  );
+  await completeOnboardingFlow(CHAT_ID_CAP, {
+    commitmentText: "Обещаю себе довести новую цель до конца.",
+    goalText: "Новая цель после освобождения слота.",
+    programLength: 180,
+    directions: ["Смелость"],
+  });
+
+  activeMissions = await dbRows(`select * from missions where user_id = '${userIdCap}' and status = 'active'`);
+  assert.equal(
+    activeMissions.length,
+    MAX_ACTIVE_MISSIONS,
+    "the newly added goal must bring the user back to exactly the cap"
+  );
 });
