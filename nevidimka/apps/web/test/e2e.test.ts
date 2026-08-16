@@ -520,6 +520,103 @@ test("/api/path: 2 active missions, no missionId, returns list mode with both go
   assert.equal(detail.mission.title, "Путь: вторая цель", "detail mode must be keyed off the requested missionId, not just 'the' active mission");
 });
 
+test("goal list navigation: tapping each card (by id from the list response) reaches that mission's own detail view, not another's", async () => {
+  // Fresh telegram_id, same reasoning as the other multi-mission tests above:
+  // keeps this independent of the shared owner's single seeded mission.
+  // 3 active missions (not 2) so a "picked the wrong one" bug (e.g. always
+  // returning the first/last mission, or an off-by-one in list ordering)
+  // has more ways to show up than with just 2.
+  const telegramId = "700111600";
+  const initData = buildTelegramInitData(telegramId, "Тест Навигация По Целям");
+  const sameOriginHeaders = { "Sec-Fetch-Site": "same-origin" };
+  const authRes = await fetch(`${BASE}/api/auth/miniapp`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...sameOriginHeaders },
+    body: JSON.stringify({ initData }),
+  });
+  assert.equal(authRes.status, 200, "initData signed with the test bot token must authenticate");
+  const { userId } = (await authRes.json()) as { userId: string };
+  const setCookie = authRes.headers.get("set-cookie") ?? "";
+  const cookieHeader = setCookie.split(";")[0];
+  assert.ok(cookieHeader.startsWith("nevidimka_session="), "must receive a session cookie");
+
+  const db = await import("@nevidimka/db");
+  const seeded = {
+    a: await db.createMission({
+      userId,
+      title: "Навигация: цель А",
+      directions: ["Тело"],
+      commitmentText: "Обещаю себе.",
+    }),
+    b: await db.createMission({
+      userId,
+      title: "Навигация: цель Б",
+      directions: ["Смелость"],
+      commitmentText: "Обещаю себе.",
+    }),
+    c: await db.createMission({
+      userId,
+      title: "Навигация: цель В",
+      directions: ["Создание"],
+      commitmentText: "Обещаю себе.",
+    }),
+  };
+  await db.closePool();
+
+  // Step 1 of the flow a real card-tap performs: load the list, exactly as
+  // the /path screen would to render the cards.
+  const listRes = await fetch(`${BASE}/api/path`, { headers: { Cookie: cookieHeader } });
+  assert.equal(listRes.status, 200);
+  const list = (await listRes.json()) as { state: string; missions: { id: string; title: string }[] };
+  assert.equal(list.state, "list", "3 active missions with no missionId must return list mode");
+  assert.equal(list.missions.length, 3, "list mode must return all 3 active missions");
+
+  // Step 2: for each card *as returned by the list response* (not the
+  // createMission return values directly), simulate tapping it — fetch
+  // detail mode for that id — and confirm it resolves to that exact
+  // mission, both id and title, and never leaks a sibling mission's data.
+  const byId = new Map(Object.values(seeded).map((m) => [m.id, m]));
+  assert.equal(byId.size, 3, "sanity: 3 distinct seeded mission ids");
+
+  for (const card of list.missions) {
+    const expected = byId.get(card.id);
+    assert.ok(expected, `list response returned an id (${card.id}) that doesn't match any seeded mission`);
+
+    const detailRes = await fetch(`${BASE}/api/path?missionId=${card.id}`, { headers: { Cookie: cookieHeader } });
+    assert.equal(detailRes.status, 200, `tapping the card for ${card.id} must resolve to a detail view`);
+    const detail = (await detailRes.json()) as { state: string; mission: { id: string; title: string } };
+    assert.equal(detail.state, "ready");
+    assert.equal(
+      detail.mission.id,
+      card.id,
+      "navigating from a list card must land on the detail view for that exact missionId, not a different one"
+    );
+    assert.equal(
+      detail.mission.title,
+      expected!.title,
+      `detail view for ${card.id} must show that mission's own title (${expected!.title}), not a sibling's`
+    );
+
+    // Cross-check against the other two seeded missions specifically:
+    // guards against a bug where detail mode ignores missionId and always
+    // returns "the" mission, which a same-title/id check alone could miss
+    // if list order happened to match creation order.
+    for (const other of Object.values(seeded)) {
+      if (other.id === card.id) continue;
+      assert.notEqual(
+        detail.mission.id,
+        other.id,
+        `detail view for ${card.id} must not return a different mission's (${other.id}) id`
+      );
+      assert.notEqual(
+        detail.mission.title,
+        other.title,
+        `detail view for ${card.id} must not return a different mission's (${other.id}) title`
+      );
+    }
+  }
+});
+
 test("/api/content/[id]: publish with 2 active missions and no missionId is rejected with a 4xx listing the active missions", async () => {
   // Fresh telegram_id, same reasoning as the other multi-mission tests above:
   // keeps this independent of the shared owner's single seeded mission and
@@ -780,6 +877,77 @@ test("PATCH /api/missions/[id]: a missionId belonging to a different user 404s (
   );
   const crossUserBody = (await crossUserRes.json()) as { code: string };
   assert.equal(crossUserBody.code, "NOT_FOUND");
+});
+
+test("Отложить: PATCH to paused persists in the DB (not just the HTTP response) and the mission drops out of the active-goal list", async () => {
+  // Fresh telegram_id, same reasoning as the other multi-mission tests above.
+  const telegramId = "700111790";
+  const initData = buildTelegramInitData(telegramId, "Тест Отложить");
+  const sameOriginHeaders = { "Sec-Fetch-Site": "same-origin" };
+  const authRes = await fetch(`${BASE}/api/auth/miniapp`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...sameOriginHeaders },
+    body: JSON.stringify({ initData }),
+  });
+  assert.equal(authRes.status, 200, "initData signed with the test bot token must authenticate");
+  const { userId } = (await authRes.json()) as { userId: string };
+  const setCookie = authRes.headers.get("set-cookie") ?? "";
+  const cookieHeader = setCookie.split(";")[0];
+  assert.ok(cookieHeader.startsWith("nevidimka_session="), "must receive a session cookie");
+
+  // Seed 2 active missions so the list isn't simply empty after pausing one
+  // — this lets the test distinguish "the right mission dropped out" from
+  // "the whole list emptied" (a bug that would pass a single-mission test).
+  const db = await import("@nevidimka/db");
+  const toBePaused = await db.createMission({
+    userId,
+    title: "Отложить: цель на паузу",
+    directions: ["Тело"],
+    commitmentText: "Обещаю себе.",
+  });
+  const stillActive = await db.createMission({
+    userId,
+    title: "Отложить: цель остаётся активной",
+    directions: ["Смелость"],
+    commitmentText: "Обещаю себе.",
+  });
+  await db.closePool();
+
+  const patchRes = await fetch(`${BASE}/api/missions/${toBePaused.id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json", Cookie: cookieHeader, ...sameOriginHeaders },
+    body: JSON.stringify({ status: "paused" }),
+  });
+  assert.equal(patchRes.status, 200, "Отложить (active -> paused) is a valid transition and must succeed");
+  const patchBody = (await patchRes.json()) as { mission: { id: string; status: string } };
+  assert.equal(patchBody.mission.status, "paused", "the HTTP response itself must reflect the new status");
+
+  // Prove #1: the status change actually persisted in the database, not
+  // just in the response body the route happened to echo back.
+  const dbAfterPatch = await import("@nevidimka/db");
+  const fromDb = await dbAfterPatch.getMissionById(userId, toBePaused.id);
+  assert.equal(
+    fromDb?.status,
+    "paused",
+    "querying the DB directly (not the HTTP response) must show status = paused — proves real persistence"
+  );
+  await dbAfterPatch.closePool();
+
+  // Prove #2: the paused mission actually drops out of the active-goal
+  // list surfaced by /api/path, while the still-active sibling remains —
+  // distinguishing "this mission left the list" from "the list is just empty".
+  const listRes = await fetch(`${BASE}/api/path`, { headers: { Cookie: cookieHeader } });
+  assert.equal(listRes.status, 200);
+  const list = (await listRes.json()) as { state: string; missions: { id: string; title: string }[] };
+  const listIds = list.missions.map((m) => m.id);
+  assert.ok(
+    !listIds.includes(toBePaused.id),
+    "Отложить must remove the mission from the active-goal list, not just flip its status in isolation"
+  );
+  assert.ok(
+    listIds.includes(stillActive.id),
+    "the still-active sibling mission must remain in the list — proves the whole list didn't just empty out"
+  );
 });
 
 test("/analytics: 'что ты заметил' button triggers the behavior-analyst AI and renders a real observation", async () => {
