@@ -1,4 +1,10 @@
-import { getOrCreateTodayPlan, getUserById, listTasksForPlan, setEveningReview } from "@nevidimka/db";
+import {
+  getActiveMissions,
+  getOrCreateTodayPlan,
+  getUserById,
+  listTasksForPlan,
+  setEveningReview,
+} from "@nevidimka/db";
 import { validateTextLength, type DailyPlan } from "@nevidimka/shared-types";
 import { dayNumberFor, todayInTimezone } from "../utils/dates.js";
 import type { BotContext } from "../types.js";
@@ -17,17 +23,28 @@ export async function buildEveningSummaryMessage(userId: string, plan: DailyPlan
 
 export async function handleEveningRequest(ctx: BotContext): Promise<void> {
   const userId = ctx.session.userId!;
-  const user = await getUserById(userId);
+  const [user, missions] = await Promise.all([getUserById(userId), getActiveMissions(userId)]);
   if (!user) {
     await ctx.reply("Не нашёл профиль, начни с /start.");
     return;
   }
+  if (missions.length === 0) {
+    await ctx.reply("Нет активной цели — нечего подводить. Начни новую через /addgoal.");
+    return;
+  }
 
   const today = todayInTimezone(user.timezone);
-  const dayNumber = dayNumberFor(user.day0Date, today);
+  // See handlers/today.ts for why the oldest active mission (missions[0],
+  // per getActiveMissions' stable ordering) stands in for the plan's single
+  // legacy dayNumber field when there are N active missions.
+  const dayNumber = dayNumberFor(missions[0].day0Date, today);
   const plan = await getOrCreateTodayPlan(userId, today, dayNumber);
 
-  if (!plan.mainTaskId) {
+  // plan.mainTaskId is a legacy field createTask no longer writes; check the
+  // actual tasks instead (same pattern as handlers/today.ts).
+  const tasks = await listTasksForPlan(userId, plan.id);
+  const mainTasks = tasks.filter((t) => t.isMainTask);
+  if (mainTasks.length === 0) {
     await ctx.reply("Сегодняшний план ещё не сформирован. Сначала /today.");
     return;
   }
@@ -48,11 +65,20 @@ export async function handleEveningReviewText(ctx: BotContext, text: string): Pr
   }
 
   const userId = ctx.session.userId!;
-  const user = await getUserById(userId);
+  const [user, missions] = await Promise.all([getUserById(userId), getActiveMissions(userId)]);
   if (!user) return;
+  if (missions.length === 0) {
+    // Can only get here after handleEveningRequest already validated an
+    // active mission existed and set awaiting = "evening_review" — this
+    // guards the edge case where the mission became inactive in between
+    // (e.g. completed/archived) before the review text arrived.
+    await ctx.reply("Что-то пошло не так с профилем. Попробуй /today ещё раз.");
+    ctx.session.awaiting = undefined;
+    return;
+  }
 
   const today = todayInTimezone(user.timezone);
-  const dayNumber = dayNumberFor(user.day0Date, today);
+  const dayNumber = dayNumberFor(missions[0].day0Date, today);
   const plan = await getOrCreateTodayPlan(userId, today, dayNumber);
 
   await setEveningReview(userId, plan.id, text);
