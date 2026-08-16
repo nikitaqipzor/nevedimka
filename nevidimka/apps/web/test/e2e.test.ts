@@ -214,6 +214,7 @@ before(async () => {
       TELEGRAM_API_BASE_URL: mockTg.url,
       VIDEO_STORAGE_ROOT: join(import.meta.dirname, "..", ".e2e-video-storage"),
       NODE_ENV: "development",
+      ALLOW_DEV_AUTH: "true",
     },
     stdio: "pipe",
   });
