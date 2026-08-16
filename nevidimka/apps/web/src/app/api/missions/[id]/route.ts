@@ -21,18 +21,32 @@ export async function PATCH(request: NextRequest, { params }: RouteParams): Prom
   const body = await request.json().catch(() => null);
   const status = body?.status;
   if (typeof status !== "string" || !VALID_STATUSES.includes(status as MissionStatus)) {
-    return NextResponse.json({ code: "INVALID_STATUS" }, { status: 400 });
+    return NextResponse.json(
+      { code: "INVALID_STATUS", message: "Некорректный статус цели." },
+      { status: 400 }
+    );
   }
 
   // getMissionById is ownership-scoped: a missionId belonging to a different
   // user returns null exactly like a nonexistent id, so this 404s without
   // leaking whether the row exists at all.
   const current = await getMissionById(session.userId, missionId);
-  if (!current) return NextResponse.json({ code: "NOT_FOUND" }, { status: 404 });
+  if (!current) {
+    return NextResponse.json(
+      { code: "NOT_FOUND", message: "Цель не найдена." },
+      { status: 404 }
+    );
+  }
 
   const allowed = VALID_TRANSITIONS[current.status] ?? [];
   if (!allowed.includes(status as MissionStatus)) {
-    return NextResponse.json({ code: "INVALID_TRANSITION" }, { status: 409 });
+    return NextResponse.json(
+      {
+        code: "INVALID_TRANSITION",
+        message: "Это действие сейчас недоступно для этой цели — возможно, её статус уже изменился.",
+      },
+      { status: 409 }
+    );
   }
 
   try {
