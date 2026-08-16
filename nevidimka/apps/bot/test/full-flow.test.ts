@@ -66,7 +66,6 @@ let mockTg: Awaited<ReturnType<typeof startMockTelegram>>;
 let db: typeof import("@nevidimka/db");
 let userId: string;
 let mainTaskId: string;
-let extraTaskId: string;
 let draftId: string;
 
 async function dbRows(sql: string): Promise<any[]> {
@@ -184,13 +183,19 @@ test("/today: check-in -> AI day plan -> tasks written with direction preserved"
   assert.equal(plans.length, 1);
   assert.equal(plans[0].sleep_quality, 4);
 
+  // planDayForMissions (the multi-mission day planner) writes exactly one
+  // main task per active mission — the old single-mission planner's separate
+  // "additional_tasks" concept was removed when the planner was rewritten
+  // for multi-goal support (no `additional_tasks` field exists anywhere in
+  // MultiMissionDayPlannerOutputSchema or the codebase anymore), so with one
+  // active mission here, /today produces exactly one task, not two.
   const tasks = await dbRows(`select * from tasks where user_id = '${userId}'`);
-  assert.equal(tasks.length, 2);
-  const mainTask = tasks.find((t) => t.is_main_task);
+  assert.equal(tasks.length, 1);
+  const mainTask = tasks[0];
+  assert.equal(mainTask.is_main_task, true);
   assert.equal(mainTask.title, "Настроить окружение проекта");
   assert.equal(mainTask.direction, "Создание");
   mainTaskId = mainTask.id;
-  extraTaskId = tasks.find((t) => !t.is_main_task).id;
 });
 
 test("focus buttons: start -> stop, with duration computed", async () => {
@@ -224,9 +229,15 @@ test("report button: AI reviewer sets completion + status", async () => {
   assert.equal(task[0].status, "partially_done");
 });
 
-test("postpone button on the extra task", async () => {
-  await bot.handleUpdate(callbackUpdate(`task:postpone:${extraTaskId}`));
-  const task = await dbRows(`select * from tasks where id = '${extraTaskId}'`);
+test("postpone button on the main task", async () => {
+  // No separate "extra task" exists anymore for this single-mission flow
+  // (see the /today test above) — this now exercises task:postpone against
+  // the same mainTaskId already used by focus/coach/report above. Running
+  // after "report button" (which already set it to partially_done) is fine:
+  // updateTaskStatus is a bare status UPDATE with no transition guard, so
+  // postponing an already-reported task is a legal, observable transition.
+  await bot.handleUpdate(callbackUpdate(`task:postpone:${mainTaskId}`));
+  const task = await dbRows(`select * from tasks where id = '${mainTaskId}'`);
   assert.equal(task[0].status, "postponed");
 });
 

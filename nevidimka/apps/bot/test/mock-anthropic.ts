@@ -39,11 +39,17 @@ export function startMockAnthropic(): Promise<{ url: string; close: () => Promis
         // fail MultiMissionDayPlannerOutputSchema's min(1), surfacing as a
         // clear parse error rather than silently misbehaving.
       }
+      // Deliberately the same fixed content for every mission (not indexed
+      // by position) — this preserves the exact main_task title/direction
+      // the pre-existing single-mission /today test in full-flow.test.ts
+      // asserts on, and callers that need to tell two missions' plans apart
+      // in a test do so via mission_id (which IS distinct per plan), not by
+      // scraping title text.
       return {
-        plans: missionIds.map((missionId, i) => ({
+        plans: missionIds.map((missionId) => ({
           mission_id: missionId,
-          summary: `Никита, день ${i + 1}. Сегодня закладываем основу. Главная задача — начать проект.`,
-          main_task: { title: `Настроить окружение проекта ${i + 1}`, estimate_minutes: 45, direction: "Создание" },
+          summary: "Никита, день 1 из 180. Сегодня закладываем основу. Главная задача — начать проект.",
+          main_task: { title: "Настроить окружение проекта", estimate_minutes: 45, direction: "Создание" },
           reasoning_note: "Начинаем мягко, чтобы не перегореть в первый день.",
         })),
       };
