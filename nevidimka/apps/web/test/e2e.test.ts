@@ -12,6 +12,7 @@ import { createHmac } from "node:crypto";
 import { chromium, type Browser, type Page } from "playwright";
 import pg from "pg";
 import { MAX_ACTIVE_MISSIONS } from "@nevidimka/shared-types";
+import { todayInTimezone } from "../src/lib/dates.js";
 import { startMockAnthropic } from "./mock-anthropic.js";
 import { startMockTelegram } from "./mock-telegram.js";
 
@@ -128,7 +129,7 @@ before(async () => {
   });
   await db.createMilestone({ userId: user.id, missionId: mission.id, title: "MVP готов", targetDay: 30 });
 
-  const today = new Date().toISOString().slice(0, 10);
+  const today = todayInTimezone(user.timezone);
   const plan = await db.getOrCreateTodayPlan(user.id, today, 12);
   await db.saveCheckIn(user.id, plan.id, { sleepQuality: 4, energy: 3, mood: 4, stress: 2 });
   await db.setPlanAiSummary(user.id, plan.id, "Никита, день 12 из 180. Продолжаем начатое.");
