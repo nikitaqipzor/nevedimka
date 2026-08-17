@@ -472,6 +472,77 @@ test("/api/mentor: 2 active missions, no missionId, falls back to multi-goal sum
   assert.ok(mentorBody.reply?.content, "a reply must come back even without a resolved single mission");
 });
 
+test("/api/mentor: 2 active missions, explicit missionId selects that mission's framing; a non-matching id 404s", async () => {
+  // This is exactly the request shape the mentor screen's goal-selector
+  // pills send once a user picks a specific goal instead of "Все цели"
+  // (apps/web/src/app/mentor/page.tsx's send() puts the pill's mission id
+  // into the POST body's missionId field) — so this proves the contract
+  // the frontend now relies on, at the API level.
+  const telegramId = "700111650";
+  const initData = buildTelegramInitData(telegramId, "Тест Мультицель Выбор Цели");
+  const sameOriginHeaders = { "Sec-Fetch-Site": "same-origin" };
+  const authRes = await fetch(`${BASE}/api/auth/miniapp`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...sameOriginHeaders },
+    body: JSON.stringify({ initData }),
+  });
+  assert.equal(authRes.status, 200, "initData signed with the test bot token must authenticate");
+  const { userId } = (await authRes.json()) as { userId: string };
+  const setCookie = authRes.headers.get("set-cookie") ?? "";
+  const cookieHeader = setCookie.split(";")[0];
+  assert.ok(cookieHeader.startsWith("nevidimka_session="), "must receive a session cookie");
+
+  const db = await import("@nevidimka/db");
+  const mission1 = await db.createMission({
+    userId,
+    title: "Выбор цели: первая",
+    directions: ["Тело"],
+    commitmentText: "Обещаю себе.",
+  });
+  const mission2 = await db.createMission({
+    userId,
+    title: "Выбор цели: вторая",
+    directions: ["Смелость"],
+    commitmentText: "Обещаю себе.",
+  });
+  await db.closePool();
+
+  const selected1Res = await fetch(`${BASE}/api/mentor`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Cookie: cookieHeader, ...sameOriginHeaders },
+    body: JSON.stringify({ message: "Как продвигается эта цель?", missionId: mission1.id }),
+  });
+  assert.equal(selected1Res.status, 200, "an explicit missionId matching an active mission must succeed");
+  const selected1Body = (await selected1Res.json()) as { ok: boolean; reply?: { content?: string } };
+  assert.equal(selected1Body.ok, true);
+  assert.ok(selected1Body.reply?.content, "a reply must come back for a single-mission-framed request");
+
+  // Selecting the *other* active mission must also succeed — proves the
+  // choice actually threads through rather than always resolving to
+  // "the first mission" or some other hardcoded pick.
+  const selected2Res = await fetch(`${BASE}/api/mentor`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Cookie: cookieHeader, ...sameOriginHeaders },
+    body: JSON.stringify({ message: "А как насчёт другой цели?", missionId: mission2.id }),
+  });
+  assert.equal(selected2Res.status, 200, "an explicit missionId for the second active mission must also succeed");
+
+  // A missionId that isn't among this user's active missions (made up,
+  // rather than reusing mission1/mission2) must be rejected outright, not
+  // silently ignored or guessed at.
+  const badRes = await fetch(`${BASE}/api/mentor`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Cookie: cookieHeader, ...sameOriginHeaders },
+    body: JSON.stringify({
+      message: "Как продвигается эта цель?",
+      missionId: "00000000-0000-0000-0000-000000000000",
+    }),
+  });
+  assert.equal(badRes.status, 404, "a missionId not among the user's active missions must 404");
+  const badBody = (await badRes.json()) as { code?: string };
+  assert.equal(badBody.code, "MISSION_NOT_FOUND");
+});
+
 test("/api/path: 2 active missions, no missionId, returns list mode with both goals; missionId returns that goal's detail", async () => {
   // Fresh telegram_id, same reasoning as the other multi-mission tests above:
   // keeps this independent of the shared owner's single seeded mission.
