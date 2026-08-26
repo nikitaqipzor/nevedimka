@@ -3,12 +3,14 @@
 import { useEffect, useRef, useState } from "react";
 import type { MentorMessage } from "@nevidimka/shared-types";
 import { apiFetch, ApiError } from "@/lib/apiClient";
-import { Eyebrow, GhostButton, PrimaryButton } from "@/components/ui";
+import { Eyebrow, PrimaryButton } from "@/components/ui";
 
 interface MissionOption {
   id: string;
   title: string;
 }
+
+type MissionPillOption = MissionOption | { id: undefined; title: string };
 
 export default function MentorPage() {
   const [messages, setMessages] = useState<MentorMessage[]>([]);
@@ -66,28 +68,26 @@ export default function MentorPage() {
     }
   }
 
+  const pillOptions: MissionPillOption[] = [{ id: undefined, title: "Все цели" }, ...missions];
+
   return (
     <div className="flex h-dvh flex-col px-5 pt-6">
       <Eyebrow>AI-наставник</Eyebrow>
 
       {missions.length > 1 && (
         <div className="mt-3 flex gap-2 overflow-x-auto pb-1">
-          {(
-            [{ id: undefined, title: "Все цели" }, ...missions] as {
-              id: string | undefined;
-              title: string;
-            }[]
-          ).map((opt) => {
+          {pillOptions.map((opt) => {
             const isSelected = selectedMissionId === opt.id;
-            const Pill = isSelected ? PrimaryButton : GhostButton;
             return (
-              <Pill
+              <button
                 key={opt.id ?? "all"}
-                className="max-w-[50%] shrink-0 truncate whitespace-nowrap"
                 onClick={() => setSelectedMissionId(opt.id)}
+                className={`max-w-[50%] shrink-0 truncate whitespace-nowrap rounded-sm px-4 py-2.5 text-sm disabled:opacity-40 ${
+                  isSelected ? "bg-brass font-medium text-base" : "border border-line text-ink-dim"
+                }`}
               >
                 {opt.title}
-              </Pill>
+              </button>
             );
           })}
         </div>
