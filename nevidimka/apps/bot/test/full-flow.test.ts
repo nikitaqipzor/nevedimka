@@ -302,6 +302,19 @@ test("/post: AI editor -> privacy check -> publish -> idempotency on retry", asy
   const versions = await dbRows(`select * from content_versions where draft_id = '${draftId}'`);
   assert.ok(["gentle", "structured", "short"].every((s) => versions.some((v) => v.step === s)));
 
+  // With exactly 1 active mission, resolveMissionAndStartEditing must
+  // auto-attribute the new draft to it (no creation-time picker, no null
+  // mission_id) — verify this directly against the DB row.
+  const activeMissionsAtCreation = await dbRows(
+    `select * from missions where user_id = '${userId}' and status = 'active'`
+  );
+  assert.equal(activeMissionsAtCreation.length, 1, "sanity: exactly one active mission at this point");
+  assert.equal(
+    drafts[0].mission_id,
+    activeMissionsAtCreation[0].id,
+    "draft must be auto-attributed to the single active mission"
+  );
+
   await bot.handleUpdate(callbackUpdate(`post:pick:gentle:${draftId}`));
   const draftAfterPick = await dbRows(`select * from content_drafts where id = '${draftId}'`);
   assert.notEqual(draftAfterPick[0].chosen_version_id, null);
@@ -340,14 +353,31 @@ test("/post: publish shows a mission picker with 2+ active missions and attribut
   );
   assert.equal(activeMissions.length, 2, "must now have two active missions");
 
-  await bot.handleUpdate(textUpdate("/post"));
-  await bot.handleUpdate(callbackUpdate("post:source:new"));
-  await bot.handleUpdate(textUpdate("Пробежал 5 км утром и записал прогресс."));
+  // Since resolveMissionAndStartEditing now resolves the mission at
+  // *creation* time, the "publish-time picker with 2+ active missions"
+  // scenario this test wants to exercise can no longer arise through the
+  // normal /post conversational flow once 2+ missions are active (the
+  // creation-time picker would intercept first — see the dedicated test for
+  // that flow below). It can still legitimately happen for a draft that has
+  // no attributed mission for some other reason (created before this
+  // attribution existed, or while 0 missions were active), so seed that
+  // state directly instead of driving it through post:source:new/text.
+  const seededDraft = await db.createContentDraft({
+    userId,
+    sourceText: "Пробежал 5 км утром и записал прогресс.",
+  });
+  const multiDraftId = seededDraft.id;
+  await db.addContentVersion({
+    userId,
+    draftId: multiDraftId,
+    step: "gentle",
+    text: "Пробежал 5 км утром и записал прогресс.",
+  });
+  // Match the end state startEditing would have produced by the time
+  // post:pick fires — publishDraftForMission specifically requires
+  // "ready_for_review" before it will publish.
+  await db.updateDraftStatus(userId, multiDraftId, "ready_for_review");
 
-  const drafts = await dbRows(
-    `select * from content_drafts where user_id = '${userId}' order by created_at desc limit 1`
-  );
-  const multiDraftId = drafts[0].id;
   await bot.handleUpdate(callbackUpdate(`post:pick:gentle:${multiDraftId}`));
 
   await bot.handleUpdate(callbackUpdate(`post:publish:${multiDraftId}`));
@@ -387,15 +417,119 @@ test("/post: publish shows a mission picker with 2+ active missions and attribut
   assert.equal(publicationsAfter[0].status, "published");
 });
 
-test("/post: tapping a picker button for a mission that went inactive before the tap fails gracefully", async () => {
+test("/post: with 2+ active missions, the creation-time picker attributes the draft up front and publish skips its own picker", async () => {
+  const activeMissionsBefore = await dbRows(
+    `select * from missions where user_id = '${userId}' and status = 'active'`
+  );
+  assert.equal(activeMissionsBefore.length, 2, "must still have two active missions from the previous test");
+  const mission2 = activeMissionsBefore.find((m: any) => m.title === "Начать бегать по утрам");
+  assert.ok(mission2, "the second mission must still be active");
+
+  const draftsCountBefore = Number(
+    (await dbRows(`select count(*) as c from content_drafts where user_id = '${userId}'`))[0].c
+  );
+
   await bot.handleUpdate(textUpdate("/post"));
   await bot.handleUpdate(callbackUpdate("post:source:new"));
-  await bot.handleUpdate(textUpdate("Ещё одна запись для проверки протухшего выбора цели."));
+  await bot.handleUpdate(textUpdate("Ещё одна пробежка, готовлю пост."));
 
-  const drafts = await dbRows(
+  // The creation-time picker must appear BEFORE any draft row is written.
+  const draftsCountAfterText = Number(
+    (await dbRows(`select count(*) as c from content_drafts where user_id = '${userId}'`))[0].c
+  );
+  assert.equal(
+    draftsCountAfterText,
+    draftsCountBefore,
+    "no draft must be created before a mission is chosen from the creation-time picker"
+  );
+
+  const pickerCall = tgCalls.filter((c) => c.method === "sendMessage").slice(-1)[0];
+  const keyboard = (pickerCall?.payload.reply_markup as any)?.inline_keyboard as
+    | { text: string; callback_data: string }[][]
+    | undefined;
+  assert.ok(keyboard, "must show an inline keyboard to pick a mission before creating the draft");
+  const buttons = keyboard.flat();
+  assert.equal(buttons.length, 2, "must show one button per active mission");
+  assert.ok(
+    buttons.every((b) => b.callback_data.startsWith("post:create_mission:")),
+    "buttons must use the creation-time callback prefix"
+  );
+  const mission2Button = buttons.find((b) => b.callback_data === `post:create_mission:${mission2.id}`);
+  assert.ok(mission2Button, "must include a button for the second mission");
+  assert.equal(mission2Button!.text, "Начать бегать по утрам");
+
+  // Tap the button for the second mission.
+  await bot.handleUpdate(callbackUpdate(`post:create_mission:${mission2.id}`));
+
+  const draftsAfterChoice = await dbRows(
     `select * from content_drafts where user_id = '${userId}' order by created_at desc limit 1`
   );
-  const staleDraftId = drafts[0].id;
+  assert.equal(draftsAfterChoice.length, 1);
+  const newDraftId = draftsAfterChoice[0].id;
+  assert.equal(
+    draftsAfterChoice[0].mission_id,
+    mission2.id,
+    "draft must now exist, attributed to the chosen mission"
+  );
+
+  await bot.handleUpdate(callbackUpdate(`post:pick:gentle:${newDraftId}`));
+
+  const callCountBeforePublish = tgCalls.length;
+  await bot.handleUpdate(callbackUpdate(`post:publish:${newDraftId}`));
+
+  // Must go straight to the channel — no publish-time picker this time,
+  // since the draft is already attributed to mission2.
+  const sentToChannel = tgCalls
+    .filter((c) => c.method === "sendMessage" && c.payload.chat_id === "@test_channel")
+    .slice(-1)[0];
+  assert.ok(sentToChannel, "bot must send the post to the channel without asking again");
+  assert.match(
+    sentToChannel!.payload.text as string,
+    /День 11 из 365/,
+    "caption must use the attributed mission's day/program"
+  );
+
+  const callsAfterPublish = tgCalls.slice(callCountBeforePublish);
+  const publishTimePicker = callsAfterPublish.find((c) => {
+    const inlineKeyboard = (c.payload.reply_markup as any)?.inline_keyboard as
+      | { callback_data: string }[][]
+      | undefined;
+    return (
+      c.method === "sendMessage" &&
+      inlineKeyboard?.flat().some((b) => b.callback_data.startsWith("post:publish_mission:"))
+    );
+  });
+  assert.equal(
+    publishTimePicker,
+    undefined,
+    "must not show the publish-time mission picker when the draft is already attributed"
+  );
+
+  const publications = await dbRows(`select * from publications where draft_id = '${newDraftId}'`);
+  assert.equal(publications.length, 1);
+  assert.equal(publications[0].status, "published");
+});
+
+test("/post: tapping a picker button for a mission that went inactive before the tap fails gracefully", async () => {
+  // Same reasoning as the mission-picker test above: with 2+ active
+  // missions, the creation-time picker would otherwise intercept before
+  // this scenario (publish-time picker on an unattributed draft + the
+  // chosen mission going stale) can arise, so seed the unattributed draft
+  // directly instead of driving it through post:source:new/text.
+  const seededDraft = await db.createContentDraft({
+    userId,
+    sourceText: "Ещё одна запись для проверки протухшего выбора цели.",
+  });
+  const staleDraftId = seededDraft.id;
+  await db.addContentVersion({
+    userId,
+    draftId: staleDraftId,
+    step: "gentle",
+    text: "Ещё одна запись для проверки протухшего выбора цели.",
+  });
+  // Match the end state startEditing would have produced by the time
+  // post:pick fires (see the analogous seeding above).
+  await db.updateDraftStatus(userId, staleDraftId, "ready_for_review");
   await bot.handleUpdate(callbackUpdate(`post:pick:gentle:${staleDraftId}`));
   await bot.handleUpdate(callbackUpdate(`post:publish:${staleDraftId}`));
 

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import {
   addContentVersion,
   createContentDraft,
+  getActiveMissions,
   listContentDrafts,
   listEvidencesForUser,
   logAiCall,
@@ -15,16 +16,21 @@ export async function GET(): Promise<NextResponse> {
   const session = await requireSession();
   if (session instanceof NextResponse) return session;
 
-  const [drafts, evidences] = await Promise.all([
+  const [drafts, evidences, missions] = await Promise.all([
     listContentDrafts(session.userId, 20),
     listEvidencesForUser(session.userId, 10),
+    getActiveMissions(session.userId),
   ]);
 
   const recentEvidences = evidences
     .filter((e) => e.rawText || e.transcript)
     .map((e) => ({ id: e.id, preview: (e.rawText ?? e.transcript ?? "").slice(0, 80) }));
 
-  return NextResponse.json({ drafts, recentEvidences });
+  return NextResponse.json({
+    drafts,
+    recentEvidences,
+    missions: missions.map((m) => ({ id: m.id, title: m.title })),
+  });
 }
 
 export async function POST(req: NextRequest): Promise<NextResponse> {
@@ -33,7 +39,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   const userId = session.userId;
 
   const body = (await req.json().catch(() => null)) as
-    | { sourceText?: string; sourceEvidenceId?: string }
+    | { sourceText?: string; sourceEvidenceId?: string; missionId?: string }
     | null;
   const sourceText = body?.sourceText?.trim();
   if (!sourceText) {
@@ -44,10 +50,27 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     return NextResponse.json({ code: "TEXT_TOO_LONG", message: lengthError }, { status: 400 });
   }
 
+  // A caller-supplied missionId must not be trusted blindly — confirm it's
+  // actually one of this user's currently active missions before attributing
+  // the draft to it, same ownership check the publish flow already applies.
+  let missionId: string | undefined;
+  if (typeof body?.missionId === "string" && body.missionId.trim()) {
+    const missions = await getActiveMissions(userId);
+    const mission = missions.find((m) => m.id === body.missionId);
+    if (!mission) {
+      return NextResponse.json(
+        { code: "MISSION_NOT_ACTIVE", message: "Указанная цель не найдена среди активных." },
+        { status: 400 }
+      );
+    }
+    missionId = mission.id;
+  }
+
   const draft = await createContentDraft({
     userId,
     sourceText,
     sourceEvidenceId: body?.sourceEvidenceId,
+    missionId,
   });
   await addContentVersion({ userId, draftId: draft.id, step: "original", text: sourceText });
   await updateDraftStatus(userId, draft.id, "editing");

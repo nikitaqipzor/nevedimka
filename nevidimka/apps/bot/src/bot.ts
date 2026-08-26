@@ -202,6 +202,10 @@ export function createBot(token: string, options?: { apiRoot?: string }): Bot<Bo
     await ctx.answerCallbackQuery();
     await content.handlePostPublishMissionChoice(ctx, ctx.match[1], ctx.match[2]);
   });
+  bot.callbackQuery(/^post:create_mission:(.+)$/, async (ctx) => {
+    await ctx.answerCallbackQuery();
+    await content.handlePostCreateMissionChoice(ctx, ctx.match[1]);
+  });
   bot.callbackQuery(/^post:cancel:(.+)$/, async (ctx) => {
     await ctx.answerCallbackQuery();
     await content.handlePostCancel(ctx, ctx.match[1]);

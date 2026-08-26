@@ -96,31 +96,37 @@ export async function POST(req: NextRequest, { params }: RouteParams): Promise<N
     }
 
     case "publish": {
-      // Content drafts (see ContentDraft in packages/shared-types) don't carry
-      // a missionId of their own — a draft is created from freeform evidence
-      // text with no mission context at all, so there's no existing per-draft
-      // attribution to fall back on (same finding as apps/bot/src/handlers/
-      // content.ts's equivalent publish flow). With multi-active-goals a
-      // single user can have more than one mission with status "active" at
-      // publish time, so which mission's day-N counter/program length the
-      // post header should use is genuinely ambiguous and has to be resolved
-      // explicitly:
+      // Content drafts (see ContentDraft in packages/shared-types) carry an
+      // optional missionId, set at creation time (see POST /api/content and
+      // the bot's equivalent resolveMissionAndStartEditing) whenever the
+      // mission was unambiguous or the caller explicitly chose one up front.
+      // When that attribution is present and still points at an active
+      // mission, it's used directly below — no further disambiguation
+      // needed.
+      //
+      // A draft can still reach this handler with no usable attribution
+      // though (e.g. created before this attribution existed, or created
+      // while 0 missions were active and a second one has been added
+      // since), and with multi-active-goals a single user can have more
+      // than one mission with status "active" — so which mission's day-N
+      // counter/program length the post header should use is genuinely
+      // ambiguous in that case and still has to be resolved explicitly:
       //   - 0 active missions: nothing to attribute to, refuse to publish.
       //   - 1 active mission: no ambiguity, publish straight through.
-      //   - 2+ active missions: this is a web API, not a chat interface, so
-      //     there's no inline keyboard to show — instead require the caller
-      //     to pass an explicit missionId in the request body, and reject
-      //     with a 4xx (including the list of active missions) if it's
-      //     missing or doesn't match an active mission. Building the actual
-      //     picker UI that supplies this missionId is out of scope here.
-      //
-      // A future migration adding a mission_id column to content_drafts (set
-      // at creation time) would remove this ambiguity entirely — out of
-      // scope per CLAUDE.md's migration-approval rule, flagged as a follow-up.
+      //   - 2+ active missions, no usable attribution: this is a web API,
+      //     not a chat interface, so there's no inline keyboard to show —
+      //     instead require the caller to pass an explicit missionId in the
+      //     request body, and reject with a 4xx (including the list of
+      //     active missions) if it's missing or doesn't match an active
+      //     mission.
       const requestedMissionId =
         typeof body.missionId === "string" && body.missionId.trim() ? body.missionId : undefined;
 
-      const [user, missions] = await Promise.all([getUserById(userId), getActiveMissions(userId)]);
+      const [user, missions, draft] = await Promise.all([
+        getUserById(userId),
+        getActiveMissions(userId),
+        getContentDraft(userId, draftId),
+      ]);
       if (!user) {
         return NextResponse.json({ code: "USER_NOT_FOUND" }, { status: 404 });
       }
@@ -134,7 +140,12 @@ export async function POST(req: NextRequest, { params }: RouteParams): Promise<N
         );
       }
 
-      let mission: Mission | undefined = missions.length === 1 ? missions[0] : undefined;
+      let mission: Mission | undefined = draft?.missionId
+        ? missions.find((m) => m.id === draft.missionId)
+        : undefined;
+      if (!mission) {
+        mission = missions.length === 1 ? missions[0] : undefined;
+      }
       if (!mission) {
         if (!requestedMissionId) {
           return NextResponse.json(
@@ -165,7 +176,6 @@ export async function POST(req: NextRequest, { params }: RouteParams): Promise<N
         return NextResponse.json({ code: "CHANNEL_NOT_CONFIGURED" }, { status: 422 });
       }
 
-      const draft = await getContentDraft(userId, draftId);
       if (!draft || !draft.chosenVersionId) {
         return NextResponse.json({ code: "DRAFT_NOT_READY" }, { status: 422 });
       }

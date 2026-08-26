@@ -758,6 +758,89 @@ test("/api/content/[id]: publish with 2 active missions and no missionId is reje
   );
 });
 
+test("/api/content: a draft created with an explicit missionId is published without needing missionId again", async () => {
+  // Companion to the test above: same 2-active-missions setup, but this time
+  // the draft is created via POST /api/content WITH an explicit missionId,
+  // so publish (POST .../[id] action "publish") should be able to prefer
+  // that attribution and succeed even with no missionId in its own body —
+  // proving the "prefer draft.missionId" path end-to-end through the real
+  // HTTP routes, not just against directly-seeded DB rows.
+  const telegramId = "700111669";
+  const initData = buildTelegramInitData(telegramId, "Тест Атрибуция При Создании");
+  const sameOriginHeaders = { "Sec-Fetch-Site": "same-origin" };
+  const authRes = await fetch(`${BASE}/api/auth/miniapp`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...sameOriginHeaders },
+    body: JSON.stringify({ initData }),
+  });
+  assert.equal(authRes.status, 200, "initData signed with the test bot token must authenticate");
+  const { userId } = (await authRes.json()) as { userId: string };
+  const setCookie = authRes.headers.get("set-cookie") ?? "";
+  const cookieHeader = setCookie.split(";")[0];
+  assert.ok(cookieHeader.startsWith("nevidimka_session="), "must receive a session cookie");
+
+  const db = await import("@nevidimka/db");
+  const mission1 = await db.createMission({
+    userId,
+    title: "Атрибуция: первая цель",
+    directions: ["Тело"],
+    commitmentText: "Обещаю себе.",
+  });
+  const mission2 = await db.createMission({
+    userId,
+    title: "Атрибуция: вторая цель",
+    directions: ["Смелость"],
+    commitmentText: "Обещаю себе.",
+  });
+  // This is a fresh user with no channel configured yet — unlike the
+  // sibling "no missionId" test above (which is rejected before the
+  // channel-configured check is ever reached), this test needs publish to
+  // actually succeed, so it must have a channel like a real onboarded user.
+  await db.setChannelId(userId, "@test_channel");
+
+  const createRes = await fetch(`${BASE}/api/content`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Cookie: cookieHeader, ...sameOriginHeaders },
+    body: JSON.stringify({
+      sourceText: "Текст для проверки атрибуции при создании черновика.",
+      missionId: mission2.id,
+    }),
+  });
+  const createBody = (await createRes.json()) as {
+    draft: { id: string; missionId?: string };
+    versions: { id: string; step: string }[];
+  };
+  assert.equal(createRes.status, 200, "creation with a valid active missionId must succeed");
+  assert.equal(
+    createBody.draft.missionId,
+    mission2.id,
+    "draft must be attributed to the requested mission at creation time"
+  );
+  const draftId = createBody.draft.id;
+  const gentleVersion = createBody.versions.find((v) => v.step === "gentle");
+  assert.ok(gentleVersion, "response must include a gentle version to choose from");
+
+  await db.setChosenVersion(userId, draftId, gentleVersion!.id);
+  await db.closePool();
+
+  // No missionId in the body this time — unlike the sibling test above
+  // (whose draft carries no attribution and gets rejected), this draft's
+  // own mission_id must resolve the ambiguity.
+  const publishRes = await fetch(`${BASE}/api/content/${draftId}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Cookie: cookieHeader, ...sameOriginHeaders },
+    body: JSON.stringify({ action: "publish" }),
+  });
+  const publishBody = (await publishRes.json()) as Record<string, unknown>;
+  assert.equal(
+    publishRes.status,
+    200,
+    `publish must succeed when the draft's own missionId already disambiguates: ${JSON.stringify(publishBody)}`
+  );
+  assert.equal(publishBody.ok, true);
+  assert.ok(mission1.id, "mission1 created only to keep 2 active missions present during publish");
+});
+
 test("PATCH /api/missions/[id]: valid transition (active -> paused) succeeds", async () => {
   const telegramId = "700111777";
   const initData = buildTelegramInitData(telegramId, "Тест Мультицель Патч1");

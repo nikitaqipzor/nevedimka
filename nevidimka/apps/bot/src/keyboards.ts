@@ -94,11 +94,30 @@ export function postConfirmKeyboard(draftId: string): InlineKeyboard {
  * Shown when a post's publish is ambiguous because the user has more than
  * one active mission (see handlePostPublish in handlers/content.ts) — lets
  * them pick which mission's day counter/program the post header should use.
+ * This is the publish-time fallback, used only for drafts with no mission
+ * already attributed (e.g. created before this attribution existed, or
+ * while 0 missions were active) — see postCreateMissionPickKeyboard below
+ * for the creation-time counterpart that avoids this ambiguity up front.
  */
 export function postMissionPickKeyboard(draftId: string, missions: Mission[]): InlineKeyboard {
   const kb = new InlineKeyboard();
   for (const m of missions) {
     kb.text(m.title, `post:publish_mission:${draftId}:${m.id}`).row();
+  }
+  return kb;
+}
+
+/**
+ * Shown at post *creation* time (before a content draft even exists) when
+ * the user has 2+ active missions, so the resulting draft can be attributed
+ * to a mission up front — see resolveMissionAndStartEditing in
+ * handlers/content.ts. Keyed only by mission id since there's no draftId
+ * yet, unlike postMissionPickKeyboard's publish-time fallback above.
+ */
+export function postCreateMissionPickKeyboard(missions: Mission[]): InlineKeyboard {
+  const kb = new InlineKeyboard();
+  for (const m of missions) {
+    kb.text(m.title, `post:create_mission:${m.id}`).row();
   }
   return kb;
 }

@@ -9,6 +9,7 @@ import { EmptyState, Eyebrow, GhostButton, Panel, PrimaryButton } from "@/compon
 interface ContentListResponse {
   drafts: ContentDraft[];
   recentEvidences: { id: string; preview: string }[];
+  missions: { id: string; title: string }[];
 }
 
 const STATUS_LABEL: Record<ContentDraft["status"], string> = {
@@ -27,6 +28,7 @@ export default function StudioPage() {
   const [composing, setComposing] = useState(false);
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
+  const [selectedMissionId, setSelectedMissionId] = useState<string | undefined>(undefined);
 
   async function load() {
     const res = await apiFetch<ContentListResponse>("/api/content");
@@ -43,7 +45,7 @@ export default function StudioPage() {
     try {
       const res = await apiFetch<{ draft: ContentDraft }>("/api/content", {
         method: "POST",
-        body: JSON.stringify({ sourceText, sourceEvidenceId }),
+        body: JSON.stringify({ sourceText, sourceEvidenceId, missionId: selectedMissionId }),
       });
       router.push(`/studio/${res.draft.id}`);
     } finally {
@@ -61,6 +63,24 @@ export default function StudioPage() {
         </PrimaryButton>
       ) : (
         <Panel className="mt-4">
+          {!!data && data.missions.length > 1 && (
+            <div className="mb-3 flex gap-2 overflow-x-auto pb-1">
+              {data.missions.map((m) => {
+                const isSelected = selectedMissionId === m.id;
+                return (
+                  <button
+                    key={m.id}
+                    onClick={() => setSelectedMissionId(m.id)}
+                    className={`max-w-[50%] shrink-0 truncate whitespace-nowrap rounded-sm px-4 py-2.5 text-sm disabled:opacity-40 ${
+                      isSelected ? "bg-brass font-medium text-base" : "border border-line text-ink-dim"
+                    }`}
+                  >
+                    {m.title}
+                  </button>
+                );
+              })}
+            </div>
+          )}
           {!!data?.recentEvidences.length && (
             <div className="mb-3 space-y-1.5">
               <div className="text-xs text-ink-faint">Из недавней записи:</div>

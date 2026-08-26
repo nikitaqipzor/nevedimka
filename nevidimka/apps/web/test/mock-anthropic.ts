@@ -58,6 +58,13 @@ export function startMockAnthropic(): Promise<{ url: string; close: () => Promis
     if (system.includes("наставник по развитию навыков")) {
       return { guidance: [{ direction: "Создание", note: "Хороший темп — стоит поддерживать регулярность." }] };
     }
+    if (system.includes("редактор текста")) {
+      return {
+        gentle: "Сегодня настроил окружение проекта. Один маленький, но настоящий шаг.",
+        structured: "Итог дня:\n\nНастроил окружение проекта — небольшой, но реальный прогресс.",
+        short: "Настроил окружение проекта.",
+      };
+    }
     return { reply: "ок" };
   }
 

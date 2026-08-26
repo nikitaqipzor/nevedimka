@@ -20,6 +20,7 @@ import { formatChannelPost, sendChannelMessage, TelegramApiError } from "@nevidi
 import { validateTextLength, type ContentVersionStep, type Mission, type User } from "@nevidimka/shared-types";
 import {
   postConfirmKeyboard,
+  postCreateMissionPickKeyboard,
   postMissionPickKeyboard,
   postSourceKeyboard,
   postVersionsKeyboard,
@@ -57,7 +58,7 @@ export async function handlePostSourceEvidence(ctx: BotContext, evidenceId: stri
     await ctx.reply("Не нашёл текст этой записи. Попробуй /post ещё раз.");
     return;
   }
-  await startEditing(ctx, text, evidenceId);
+  await resolveMissionAndStartEditing(ctx, text, evidenceId);
 }
 
 export async function handlePostSourceNew(ctx: BotContext): Promise<void> {
@@ -72,14 +73,70 @@ export async function handlePostSourceText(ctx: BotContext, text: string): Promi
     return; // stays in "post_source_text" awaiting state
   }
   ctx.session.awaiting = undefined;
-  await startEditing(ctx, text);
+  await resolveMissionAndStartEditing(ctx, text);
 }
 
-async function startEditing(ctx: BotContext, sourceText: string, sourceEvidenceId?: string): Promise<void> {
+/**
+ * Decides whether the mission this post should be attributed to is already
+ * unambiguous (0 or 1 active missions) or needs an explicit choice (2+),
+ * before a content draft even exists. This is what lets handlePostPublish
+ * skip its own picker later — see the doc comment there.
+ */
+async function resolveMissionAndStartEditing(
+  ctx: BotContext,
+  sourceText: string,
+  sourceEvidenceId?: string
+): Promise<void> {
+  const userId = ctx.session.userId!;
+  const missions = await getActiveMissions(userId);
+  if (missions.length <= 1) {
+    await startEditing(ctx, sourceText, sourceEvidenceId, missions[0]?.id);
+    return;
+  }
+  ctx.session.pendingPost = { sourceText, sourceEvidenceId };
+  await ctx.reply("К какой цели отнести этот пост?", {
+    reply_markup: postCreateMissionPickKeyboard(missions),
+  });
+}
+
+/**
+ * Resumes resolveMissionAndStartEditing's creation-time picker (shown only
+ * when 2+ missions are active) once the user taps a specific mission
+ * button. Re-fetches active missions rather than trusting the callback's
+ * missionId blindly, so a mission that went inactive between "show the
+ * picker" and "tap a button" is caught here instead of silently attributing
+ * the new draft to a mission that's no longer active — same defensive
+ * pattern as handlePostPublishMissionChoice below.
+ */
+export async function handlePostCreateMissionChoice(ctx: BotContext, missionId: string): Promise<void> {
+  const userId = ctx.session.userId!;
+  const pending = ctx.session.pendingPost;
+  await ctx.editMessageReplyMarkup().catch(() => {});
+  if (!pending) {
+    await ctx.reply("Черновик поста не найден. Попробуй /post ещё раз.");
+    return;
+  }
+  const missions = await getActiveMissions(userId);
+  const mission = missions.find((m) => m.id === missionId);
+  if (!mission) {
+    ctx.session.pendingPost = undefined;
+    await ctx.reply("Эта цель больше не активна. Попробуй /post ещё раз.");
+    return;
+  }
+  ctx.session.pendingPost = undefined;
+  await startEditing(ctx, pending.sourceText, pending.sourceEvidenceId, mission.id);
+}
+
+async function startEditing(
+  ctx: BotContext,
+  sourceText: string,
+  sourceEvidenceId?: string,
+  missionId?: string
+): Promise<void> {
   const userId = ctx.session.userId!;
   await ctx.reply("Готовлю варианты текста…");
 
-  const draft = await createContentDraft({ userId, sourceText, sourceEvidenceId });
+  const draft = await createContentDraft({ userId, sourceText, sourceEvidenceId, missionId });
   await addContentVersion({ userId, draftId: draft.id, step: "original", text: sourceText });
   await updateDraftStatus(userId, draft.id, "editing");
 
@@ -203,30 +260,36 @@ export async function handlePostCancel(ctx: BotContext, draftId: string): Promis
 }
 
 /**
- * Content drafts (see ContentDraft in packages/shared-types) don't carry a
- * missionId of their own — a draft is created from freeform evidence text
- * (startEditing) with no mission context at all, so there's no existing
- * per-draft attribution to fall back on. With multi-active-goals, a single
- * user can have more than one mission with status "active" at publish time,
- * so which mission's day-N counter/program length the post header should
- * use is genuinely ambiguous and has to be resolved explicitly:
+ * Content drafts (see ContentDraft in packages/shared-types) carry an
+ * optional missionId, set at creation time by resolveMissionAndStartEditing
+ * above whenever the mission was unambiguous (0 or 1 active missions) or the
+ * user explicitly chose one via the creation-time picker. When that
+ * attribution is present and still points at an active mission, it's used
+ * directly here — no further disambiguation needed.
+ *
+ * A draft can still reach this handler with no usable attribution though
+ * (e.g. created before this attribution existed, or while 0 missions were
+ * active and a second one was added since), and with multi-active-goals a
+ * single user can have more than one mission with status "active" — so
+ * which mission's day-N counter/program length the post header should use
+ * is genuinely ambiguous in that case and still has to be resolved
+ * explicitly:
  *   - 0 active missions: nothing to attribute to, refuse to publish.
  *   - 1 active mission: no ambiguity, publish straight through.
- *   - 2+ active missions: ask via postMissionPickKeyboard and resume in
- *     handlePostPublishMissionChoice once the user taps one. The in-flight
- *     draftId/versionId already round-trips through callback data on every
- *     other step of this flow (see postConfirmKeyboard etc.), so the picker
- *     follows the same pattern instead of adding new ctx.session state.
- *
- * A future migration adding a mission_id column to content_drafts (set at
- * creation time, e.g. from the mission the user was last acting on) would
- * remove this ambiguity entirely and let /post skip the picker altogether —
- * out of scope here per CLAUDE.md's migration-approval rule, flagged as a
- * follow-up.
+ *   - 2+ active missions, no usable attribution: ask via
+ *     postMissionPickKeyboard and resume in handlePostPublishMissionChoice
+ *     once the user taps one. The in-flight draftId/versionId already
+ *     round-trips through callback data on every other step of this flow
+ *     (see postConfirmKeyboard etc.), so the picker follows the same
+ *     pattern instead of adding new ctx.session state.
  */
 export async function handlePostPublish(ctx: BotContext, draftId: string): Promise<void> {
   const userId = ctx.session.userId!;
-  const [user, missions] = await Promise.all([getUserById(userId), getActiveMissions(userId)]);
+  const [user, missions, draft] = await Promise.all([
+    getUserById(userId),
+    getActiveMissions(userId),
+    getContentDraft(userId, draftId),
+  ]);
   if (!user) {
     await ctx.reply("Профиль не найден.");
     return;
@@ -240,6 +303,12 @@ export async function handlePostPublish(ctx: BotContext, draftId: string): Promi
   const botToken = process.env.TELEGRAM_BOT_TOKEN;
   if (!channelId || !botToken) {
     await ctx.reply("Канал не подключён. Настрой его в /settings или через TELEGRAM_CHANNEL_ID.");
+    return;
+  }
+
+  const attributedMission = draft?.missionId ? missions.find((m) => m.id === draft.missionId) : undefined;
+  if (attributedMission) {
+    await publishDraftForMission(ctx, user, attributedMission, draftId, channelId, botToken);
     return;
   }
 

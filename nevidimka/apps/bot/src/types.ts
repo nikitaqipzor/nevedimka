@@ -38,6 +38,10 @@ export interface SessionData {
     milestones: { title: string; target_day: number }[];
     directions: string[];
   };
+  /** Holds a not-yet-created post's source text between /post's creation-time
+   *  mission picker (shown only with 2+ active missions) and the tap that
+   *  resolves it. */
+  pendingPost?: { sourceText: string; sourceEvidenceId?: string };
   /** Holds the morning hour between the two /settings reminder-hour steps. */
   settingsDraft?: {
     morningHour?: number | null;
