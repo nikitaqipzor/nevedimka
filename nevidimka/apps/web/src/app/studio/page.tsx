@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import type { ContentDraft } from "@nevidimka/shared-types";
-import { apiFetch } from "@/lib/apiClient";
+import { ApiError, apiFetch } from "@/lib/apiClient";
 import { EmptyState, Eyebrow, GhostButton, Panel, PrimaryButton } from "@/components/ui";
 
 interface ContentListResponse {
@@ -29,6 +29,7 @@ export default function StudioPage() {
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
   const [selectedMissionId, setSelectedMissionId] = useState<string | undefined>(undefined);
+  const [error, setError] = useState<string | null>(null);
 
   async function load() {
     const res = await apiFetch<ContentListResponse>("/api/content");
@@ -42,12 +43,15 @@ export default function StudioPage() {
   async function createFromText(sourceText: string, sourceEvidenceId?: string) {
     if (!sourceText.trim() || busy) return;
     setBusy(true);
+    setError(null);
     try {
       const res = await apiFetch<{ draft: ContentDraft }>("/api/content", {
         method: "POST",
         body: JSON.stringify({ sourceText, sourceEvidenceId, missionId: selectedMissionId }),
       });
       router.push(`/studio/${res.draft.id}`);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Не удалось создать пост.");
     } finally {
       setBusy(false);
     }
@@ -70,6 +74,7 @@ export default function StudioPage() {
                 return (
                   <button
                     key={m.id}
+                    disabled={busy}
                     onClick={() => setSelectedMissionId(m.id)}
                     className={`max-w-[50%] shrink-0 truncate whitespace-nowrap rounded-sm px-4 py-2.5 text-sm disabled:opacity-40 ${
                       isSelected ? "bg-brass font-medium text-base" : "border border-line text-ink-dim"
@@ -96,6 +101,7 @@ export default function StudioPage() {
               ))}
             </div>
           )}
+          {error && <div className="mb-2 text-xs text-warn">{error}</div>}
           <div className="text-xs text-ink-faint">Или напиши текст:</div>
           <textarea
             value={text}
