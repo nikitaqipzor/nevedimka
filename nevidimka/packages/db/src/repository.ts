@@ -841,6 +841,7 @@ function mapContentDraft(r: any): ContentDraft {
     sourceText: r.source_text,
     status: r.status as ContentDraftStatus,
     chosenVersionId: r.chosen_version_id ?? undefined,
+    missionId: r.mission_id ?? undefined,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
   };
@@ -882,12 +883,13 @@ export async function createContentDraft(params: {
   userId: string;
   sourceText: string;
   sourceEvidenceId?: string;
+  missionId?: string;
 }): Promise<ContentDraft> {
   return withUserContext(params.userId, async (client) => {
     const r = await client.query(
-      `insert into content_drafts (user_id, source_text, source_evidence_id)
-       values ($1, $2, $3) returning *`,
-      [params.userId, params.sourceText, params.sourceEvidenceId ?? null]
+      `insert into content_drafts (user_id, source_text, source_evidence_id, mission_id)
+       values ($1, $2, $3, $4) returning *`,
+      [params.userId, params.sourceText, params.sourceEvidenceId ?? null, params.missionId ?? null]
     );
     return mapContentDraft(r.rows[0]);
   });

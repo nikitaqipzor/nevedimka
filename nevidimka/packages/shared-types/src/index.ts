@@ -225,6 +225,7 @@ export interface ContentDraft {
   sourceText: string;
   status: ContentDraftStatus;
   chosenVersionId?: UUID;
+  missionId?: UUID;
   createdAt: ISODateTimeString;
   updatedAt: ISODateTimeString;
 }
