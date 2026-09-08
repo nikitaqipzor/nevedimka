@@ -15,18 +15,20 @@ import pg from "pg";
 
 const ADMIN_URL = process.env.DATABASE_URL ?? "postgres://postgres:postgres@localhost:5432/postgres";
 const TEST_DB = "nevidimka_rls_test";
-const APP_ROLE = "nevidimka_rls_test_role";
+const APP_ROLE = "nevidimka_rls_app_role";
+const SYSTEM_ROLE = "nevidimka_rls_system_role";
 const APP_PASSWORD = "test-only-password";
+const SYSTEM_PASSWORD = "test-only-system-password";
 
 function urlForDb(dbName: string): string {
   const u = new URL(ADMIN_URL);
   u.pathname = `/${dbName}`;
   return u.toString();
 }
-function urlForRestrictedRole(): string {
+function urlForRole(role: string, password: string): string {
   const u = new URL(urlForDb(TEST_DB));
-  u.username = APP_ROLE;
-  u.password = APP_PASSWORD;
+  u.username = role;
+  u.password = password;
   return u.toString();
 }
 
@@ -50,19 +52,21 @@ before(async () => {
     await dbAdmin.query(readFileSync(join(migrationsDir, file), "utf8"));
   }
 
-  // The restricted role: NOT a superuser, does NOT bypass RLS in general —
-  // except BYPASSRLS is still required for the documented bootstrap case
-  // (creating a brand-new user has no user_id to scope to yet; see
-  // withSystemContext's doc comment in src/client.ts). This mirrors
-  // exactly what a real deployment's DATABASE_URL role should be.
+  // DATABASE_URL is a genuinely restricted application role. Privileged
+  // bootstrap and cross-user jobs use a separate SYSTEM_DATABASE_URL role.
   await dbAdmin.query(`drop role if exists ${APP_ROLE}`);
-  await dbAdmin.query(`create role ${APP_ROLE} login password '${APP_PASSWORD}' nosuperuser bypassrls`);
-  await dbAdmin.query(`grant usage on schema public to ${APP_ROLE}`);
-  await dbAdmin.query(`grant select, insert, update, delete on all tables in schema public to ${APP_ROLE}`);
-  await dbAdmin.query(`grant usage, select on all sequences in schema public to ${APP_ROLE}`);
+  await dbAdmin.query(`drop role if exists ${SYSTEM_ROLE}`);
+  await dbAdmin.query(`create role ${APP_ROLE} login password '${APP_PASSWORD}' nosuperuser nobypassrls`);
+  await dbAdmin.query(`create role ${SYSTEM_ROLE} login password '${SYSTEM_PASSWORD}' nosuperuser bypassrls`);
+  for (const role of [APP_ROLE, SYSTEM_ROLE]) {
+    await dbAdmin.query(`grant usage on schema public to ${role}`);
+    await dbAdmin.query(`grant select, insert, update, delete on all tables in schema public to ${role}`);
+    await dbAdmin.query(`grant usage, select on all sequences in schema public to ${role}`);
+  }
   await dbAdmin.end();
 
-  process.env.DATABASE_URL = urlForRestrictedRole();
+  process.env.DATABASE_URL = urlForRole(APP_ROLE, APP_PASSWORD);
+  process.env.SYSTEM_DATABASE_URL = urlForRole(SYSTEM_ROLE, SYSTEM_PASSWORD);
   db = await import("../dist/index.js");
 });
 
@@ -72,6 +76,7 @@ after(async () => {
   await admin.connect();
   await admin.query(`drop database if exists ${TEST_DB}`);
   await admin.query(`drop role if exists ${APP_ROLE}`);
+  await admin.query(`drop role if exists ${SYSTEM_ROLE}`);
   await admin.end();
 });
 

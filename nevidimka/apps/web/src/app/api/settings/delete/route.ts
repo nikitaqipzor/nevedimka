@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { deleteUserAccount } from "@nevidimka/db";
+import { AccountDeletionBlockedError, deleteUserAccount } from "@nevidimka/db";
 import { requireSession, SESSION_COOKIE_NAME } from "@/lib/session";
 
 export async function POST(req: NextRequest): Promise<NextResponse> {
@@ -17,7 +17,20 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     );
   }
 
-  await deleteUserAccount(session.userId);
+  try {
+    await deleteUserAccount(session.userId);
+  } catch (error) {
+    if (error instanceof AccountDeletionBlockedError) {
+      return NextResponse.json(
+        {
+          code: "VIDEO_PROCESSING",
+          message: "Видео ещё обрабатывается. Дождись результата и повтори удаление.",
+        },
+        { status: 409 }
+      );
+    }
+    throw error;
+  }
 
   const res = NextResponse.json({ ok: true });
   res.cookies.delete(SESSION_COOKIE_NAME);

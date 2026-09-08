@@ -7,6 +7,9 @@
 
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
+import { access, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import pg from "pg";
 import type { Bot } from "grammy";
 import type { Update } from "grammy/types";
@@ -67,6 +70,8 @@ let userId: string;
 let mainTaskId: string;
 let extraTaskId: string;
 let draftId: string;
+let evidenceStorageRoot: string;
+let videoStorageRoot: string;
 
 async function dbRows(sql: string): Promise<any[]> {
   const client = new pg.Client({ connectionString: urlForDb(TEST_DB) });
@@ -95,6 +100,10 @@ before(async () => {
   await dbAdmin.end();
 
   process.env.DATABASE_URL = urlForDb(TEST_DB);
+  evidenceStorageRoot = await mkdtemp(join(tmpdir(), "nevidimka-full-flow-evidence-"));
+  videoStorageRoot = await mkdtemp(join(tmpdir(), "nevidimka-full-flow-video-"));
+  process.env.EVIDENCE_STORAGE_ROOT = evidenceStorageRoot;
+  process.env.VIDEO_STORAGE_ROOT = videoStorageRoot;
   process.env.TELEGRAM_CHANNEL_ID = "@test_channel";
   process.env.AI_RATE_LIMIT_MAX_CALLS = "1000";
 
@@ -119,6 +128,8 @@ after(async () => {
   await db.closePool();
   await mockAi?.close();
   await mockTg?.close();
+  await rm(evidenceStorageRoot, { recursive: true, force: true });
+  await rm(videoStorageRoot, { recursive: true, force: true });
   const admin = new pg.Client({ connectionString: ADMIN_URL });
   await admin.connect();
   await admin.query(`drop database if exists ${TEST_DB}`);
@@ -267,6 +278,22 @@ test("/export sends a document containing this user's real data", async () => {
 });
 
 test("/delete: wrong confirmation text cancels, correct text deletes everything (cascade)", async () => {
+  const evidencePath = join(evidenceStorageRoot, "account-evidence.ogg");
+  const uploadDirectory = join(videoStorageRoot, "uploads");
+  const originalVideoPath = join(uploadDirectory, "original.mp4");
+  await writeFile(evidencePath, "private evidence");
+  await mkdir(uploadDirectory, { recursive: true });
+  await writeFile(originalVideoPath, "original video");
+  await db.addEvidence({ userId, kind: "voice", storagePath: evidencePath });
+  const videoAsset = await db.createVideoAsset({
+    userId,
+    originalStoragePath: originalVideoPath,
+  });
+  const videoWorkDirectory = join(videoStorageRoot, videoAsset.id, "work");
+  const masterVideoPath = join(videoWorkDirectory, "master.mp4");
+  await mkdir(videoWorkDirectory, { recursive: true });
+  await writeFile(masterVideoPath, "processed video");
+
   await bot.handleUpdate(textUpdate("/delete"));
   assert.match(lastBotReply(tgCalls) ?? "", /необратимо/i);
 
@@ -275,8 +302,21 @@ test("/delete: wrong confirmation text cancels, correct text deletes everything 
   assert.match(lastBotReply(tgCalls) ?? "", /Отменено/);
   let stillThere = await dbRows(`select 1 from users where id = '${userId}'`);
   assert.equal(stillThere.length, 1, "wrong confirmation text must not delete the account");
+  await access(evidencePath);
+  await access(originalVideoPath);
+  await access(masterVideoPath);
 
-  // Correct confirmation: must delete the user and everything cascading from it
+  // Active video work: fail closed so the worker cannot recreate files after cleanup.
+  await db.updateVideoAssetStatus(userId, videoAsset.id, "processing");
+  await bot.handleUpdate(textUpdate("/delete"));
+  await bot.handleUpdate(textUpdate("DELETE"));
+  assert.match(lastBotReply(tgCalls) ?? "", /ещё обрабатывается/i);
+  stillThere = await dbRows(`select 1 from users where id = '${userId}'`);
+  assert.equal(stillThere.length, 1, "active video processing must postpone account deletion");
+  await access(masterVideoPath);
+  await db.updateVideoAssetStatus(userId, videoAsset.id, "failed");
+
+  // Correct confirmation after processing stops: delete the user and every owned resource.
   await bot.handleUpdate(textUpdate("/delete"));
   await bot.handleUpdate(textUpdate("DELETE"));
   assert.match(lastBotReply(tgCalls) ?? "", /удалены/);
@@ -289,4 +329,7 @@ test("/delete: wrong confirmation text cancels, correct text deletes everything 
   assert.equal(missionsAfter.length, 0, "cascade must have deleted this user's missions");
   const publicationsAfter = await dbRows(`select 1 from publications where user_id = '${userId}'`);
   assert.equal(publicationsAfter.length, 0, "cascade must have deleted this user's publications");
+  await assert.rejects(access(evidencePath), "account deletion must remove owned evidence files");
+  await assert.rejects(access(originalVideoPath), "account deletion must remove original videos");
+  await assert.rejects(access(masterVideoPath), "account deletion must remove video work directories");
 });

@@ -71,7 +71,7 @@ export async function handleVideoUpload(
 
   await ctx.reply("Видео получено, начинаю обработку — это может занять пару минут.");
 
-  const localPath = await saveTelegramFile(bot, fileId, "mp4");
+  const localPath = await saveTelegramFile(bot, fileId, "mp4", "video");
   try {
     await createVideoAsset({ userId, originalStoragePath: localPath });
   } catch (err) {

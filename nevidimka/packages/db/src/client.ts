@@ -1,4 +1,5 @@
 import pg from "pg";
+import { resolveDatabaseUrls } from "./config.js";
 
 // node-postgres parses SQL `date` columns (OID 1082) into JS Date objects
 // by default. This codebase treats every date column (day0_date,
@@ -17,25 +18,36 @@ pg.types.setTypeParser(1082 /* date */, (val) => val);
 
 const { Pool } = pg;
 
-let pool: pg.Pool | undefined;
+let userPool: pg.Pool | undefined;
+let systemPool: pg.Pool | undefined;
 
 export function getPool(): pg.Pool {
-  if (!pool) {
-    const connectionString = process.env.DATABASE_URL;
-    if (!connectionString) {
-      throw new Error("DATABASE_URL is not set");
-    }
-    pool = new Pool({ connectionString });
+  if (!userPool) {
+    const { user } = resolveDatabaseUrls();
+    userPool = new Pool({ connectionString: user });
   }
-  return pool;
+  return userPool;
 }
 
-/** Closes the shared pool — used by tests to release connections before dropping a test database, and available for graceful process shutdown generally. */
-export async function closePool(): Promise<void> {
-  if (pool) {
-    await pool.end();
-    pool = undefined;
+export function getSystemPool(): pg.Pool {
+  const { user, system } = resolveDatabaseUrls();
+  if (system === user) {
+    return getPool();
   }
+  if (!systemPool) {
+    systemPool = new Pool({ connectionString: system });
+  }
+  return systemPool;
+}
+
+/** Closes both pools — used by tests and graceful process shutdown. */
+export async function closePool(): Promise<void> {
+  const pools = [userPool, systemPool].filter(
+    (pool, index, all): pool is pg.Pool => Boolean(pool) && all.indexOf(pool) === index
+  );
+  userPool = undefined;
+  systemPool = undefined;
+  await Promise.all(pools.map((pool) => pool.end()));
 }
 
 /**
@@ -80,18 +92,14 @@ export async function withUserContext<T>(
 }
 
 /**
- * For operations that legitimately need to run before a user_id exists yet
- * (e.g. looking up or creating a user by telegram_id at /start). This is
- * the one path in the codebase that requires the Postgres role behind
- * DATABASE_URL to have BYPASSRLS — see migrations/002_rls.sql. Everywhere
- * else, use withUserContext so RLS enforces isolation even if application
- * code has a bug. Keep this function's call sites limited to auth/user
- * bootstrap; do not use it as a shortcut to skip RLS elsewhere.
+ * Uses SYSTEM_DATABASE_URL for the narrowly reviewed cross-user operations
+ * needed by auth bootstrap, reminders, and queue claims. DATABASE_URL must
+ * remain a NOBYPASSRLS role in production.
  */
 export async function withSystemContext<T>(
   fn: (client: pg.PoolClient) => Promise<T>
 ): Promise<T> {
-  const client = await getPool().connect();
+  const client = await getSystemPool().connect();
   try {
     return await fn(client);
   } finally {

@@ -32,7 +32,10 @@ import type {
   VideoRender,
   VideoRenderKind,
 } from "@nevidimka/shared-types";
+import { join } from "node:path";
+import { assertAccountDeletionCanProceed } from "./accountDeletion.js";
 import { withSystemContext, withUserContext } from "./client.js";
+import { deleteLocalStorageEntries, resolveLocalStorageRoots } from "./storageCleanup.js";
 
 // --- row mappers -----------------------------------------------------------
 
@@ -1654,12 +1657,50 @@ export async function exportUserData(userId: string): Promise<Record<string, unk
 }
 
 /**
- * Deletes the user's own row, which cascades (via `on delete cascade` on
- * every foreign key back to `users`) through every table this user owns —
- * the "delete my data" half of section 15. RLS's `users_self` policy
- * (migrations/002_rls.sql) permits a user to delete only their own row.
+ * Deletes files referenced by the user's rows before deleting the user's
+ * own row, which cascades through every table this user owns. All paths are
+ * validated before the first unlink, and the rows are locked until the DB
+ * transaction commits so a worker cannot mutate them during cleanup.
  */
 export async function deleteUserAccount(userId: string): Promise<void> {
-  await withUserContext(userId, (client) => client.query("delete from users where id = $1", [userId]));
+  await withUserContext(userId, async (client) => {
+    const [evidences, assets, renders] = await Promise.all([
+      client.query(
+        "select storage_path from evidences where user_id = $1 and storage_path is not null for update",
+        [userId]
+      ),
+      client.query(
+        "select id, original_storage_path, status from video_assets where user_id = $1 for update",
+        [userId]
+      ),
+      client.query(
+        `select storage_path, cover_path from video_renders
+         where user_id = $1 for update`,
+        [userId]
+      ),
+    ]);
+
+    assertAccountDeletionCanProceed(
+      assets.rows.map((row) => row.status as VideoAssetStatus)
+    );
+
+    const storagePaths = [
+      ...evidences.rows.map((row) => row.storage_path as string),
+      ...assets.rows.map((row) => row.original_storage_path as string),
+      ...renders.rows.flatMap((row) =>
+        [row.storage_path, row.cover_path].filter((path): path is string => typeof path === "string")
+      ),
+    ];
+
+    const storageRoots = resolveLocalStorageRoots();
+    await deleteLocalStorageEntries(
+      {
+        files: storagePaths,
+        directories: assets.rows.map((row) => join(storageRoots.video, row.id as string)),
+      },
+      storageRoots
+    );
+    await client.query("delete from users where id = $1", [userId]);
+  });
 }
 

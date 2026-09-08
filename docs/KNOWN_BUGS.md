@@ -10,26 +10,38 @@ Track recurring issues and fragile areas.
 - Suspected cause:
 - Status:
 
+## Active Issues
+
+### CI workflow was nested below the repository root
+- Symptoms: GitHub does not discover `nevidimka/.github/workflows/ci.yml`.
+- Scope: all automated typecheck, build, database, video, bot, and web checks.
+- Workaround: root `.github/workflows/ci.yml` runs commands from `nevidimka/`.
+- Status: Root workflow added; verify on the next GitHub push or pull request.
+
+### External deployment paths are not fully smoke-tested
+- Symptoms: Docker, ASR, Telegram webhook, or storage behavior may fail only in a real environment.
+- Scope: first production deployment.
+- Workaround: deploy to staging and execute the launch checklist before production.
+- Status: Open.
+
+### Dependency audit reports high-severity findings
+- Symptoms: `npm audit` reports 10 high and 5 moderate findings in the current lockfile, including direct dependencies in the Next.js/PostCSS/Tailwind and Express stacks.
+- Scope: web build/runtime, bot HTTP server, and scheduling dependencies.
+- Workaround: do not expose the application publicly before reviewing advisories and testing compatible upgrades.
+- Status: Open; requires a dedicated dependency-upgrade change because several findings have no automatic fix.
+
 ## Watchlist
-Use this section for risk hotspots even when there is no active bug.
+- Session lifetime and revocation
+- Worker queue recovery and dead-letter visibility
+- AI cost spikes and provider rate limits
+- Documentation drift between repository root and application README
 
-### Auth and Billing
-- Symptoms: Regressions here can lock users out or affect money movement.
-- Scope: Login, signup, sessions, roles, subscriptions, invoices, webhooks.
-- Workaround: Require plan, focused verification, and explicit approval for sensitive changes.
-- Suspected cause: High coupling to external services and policy rules.
-- Status: High risk surface.
+## Resolved Pending Infrastructure Verification
 
-### Schema and RLS
-- Symptoms: Data disappears, data leaks, or queries fail for some roles.
-- Scope: migrations, policies, generated types, protected queries.
-- Workaround: review schema diffs and RLS implications before applying.
-- Suspected cause: policy drift, unreviewed migrations, missing role coverage.
-- Status: High risk surface.
+### Database privilege model used one connection pool
+- Resolution: split request and system pools across `DATABASE_URL` and `SYSTEM_DATABASE_URL`; production rejects missing or identical credentials, and Compose provisions a `NOBYPASSRLS` application role.
+- Verification: focused configuration tests pass; restricted-role Postgres integration remains to run in CI/staging.
 
-### Deploy and Monitoring
-- Symptoms: app works locally but fails after release, silent production errors, broken env assumptions.
-- Scope: Vercel envs, build config, runtime config, Sentry setup.
-- Workaround: use at least one broader verification step for deploy-sensitive changes.
-- Suspected cause: environment mismatch or missing observability coverage.
-- Status: High risk surface.
+### Account deletion left local files
+- Resolution: deletion now removes validated evidence/video paths and full per-asset work directories before the database cascade; bot, web, and worker share the required Compose volumes.
+- Verification: filesystem unit tests pass, including traversal and symlink guards; the Postgres-backed full-flow test is updated but awaits infrastructure.

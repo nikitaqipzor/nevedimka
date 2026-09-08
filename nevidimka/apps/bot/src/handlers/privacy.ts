@@ -1,5 +1,9 @@
 import { InputFile } from "grammy";
-import { deleteUserAccount, exportUserData } from "@nevidimka/db";
+import {
+  AccountDeletionBlockedError,
+  deleteUserAccount,
+  exportUserData,
+} from "@nevidimka/db";
 import type { BotContext } from "../types.js";
 
 export async function handleExportRequest(ctx: BotContext): Promise<void> {
@@ -33,7 +37,15 @@ export async function handleDeleteConfirmText(ctx: BotContext, text: string): Pr
   }
 
   const userId = ctx.session.userId!;
-  await deleteUserAccount(userId);
+  try {
+    await deleteUserAccount(userId);
+  } catch (error) {
+    if (error instanceof AccountDeletionBlockedError) {
+      await ctx.reply("Видео ещё обрабатывается. Дождись результата и повтори /delete.");
+      return;
+    }
+    throw error;
+  }
   ctx.session.userId = undefined;
   await ctx.reply("Аккаунт и все данные удалены. Напиши /start, если захочешь начать заново.");
 }

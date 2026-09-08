@@ -49,7 +49,7 @@ export async function handleReportMedia(
   if (!awaiting || awaiting.kind !== "report") return;
   const userId = ctx.session.userId!;
 
-  const localPath = await saveTelegramFile(bot, fileId, extension);
+  const localPath = await saveTelegramFile(bot, fileId, extension, "evidence");
 
   let transcript: string | undefined;
   try {

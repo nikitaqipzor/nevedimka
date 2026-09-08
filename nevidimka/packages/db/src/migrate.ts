@@ -2,6 +2,7 @@ import { readdirSync, readFileSync, existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import pg from "pg";
+import { resolveDatabaseUrls } from "./config.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const MIGRATIONS_DIR = join(__dirname, "..", "migrations");
@@ -91,10 +92,7 @@ async function down(client: pg.Client, steps: number): Promise<void> {
 }
 
 async function main(): Promise<void> {
-  const connectionString = process.env.DATABASE_URL;
-  if (!connectionString) {
-    throw new Error("DATABASE_URL is not set");
-  }
+  const { system: connectionString } = resolveDatabaseUrls();
 
   const [command, arg] = process.argv.slice(2);
 

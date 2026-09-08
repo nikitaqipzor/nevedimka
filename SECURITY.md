@@ -11,11 +11,12 @@ Security rules for all agents and contributors.
 The following areas require a plan and explicit confirmation before changes:
 - Authentication
 - Authorization
-- Billing and payment flows
 - Database schema and migrations
 - RLS policies and data access rules
-- Production configuration
-- Webhooks and background jobs that affect money or access
+- Telegram channel publication and webhook handling
+- AI provider configuration and privacy controls
+- Video and evidence storage
+- Production configuration and background jobs
 
 ## Database Safety
 - Use migrations for schema changes.
@@ -32,12 +33,18 @@ The following areas require a plan and explicit confirmation before changes:
 ## Autonomous Workflow Limits
 The following areas must stay human-approved even if automation tooling is available:
 - Authentication
-- Billing and Stripe flows
-- Supabase RLS and access control
+- Postgres RLS and access control
 - Database migrations
 - Production deploys
 - Data deletion
+- Telegram publication behavior
 - Environment and secrets changes
+
+## Current Security Status
+- Request-scoped operations use `DATABASE_URL`; reviewed cross-user operations and migrations use a separate `SYSTEM_DATABASE_URL`. Production rejects missing or identical credentials.
+- Account deletion validates and removes referenced evidence/video files and per-asset work directories before deleting database rows; it fails closed while a video worker is active.
+- Restricted-role RLS and filesystem cleanup have focused tests, but the full Postgres and Docker scenarios still require CI/staging verification.
+- Multi-user registration remains disabled until that verification, storage isolation, quotas, and the broader security review are complete.
 
 ## Verification Expectations
 - Sensitive changes need focused verification and at least one broader confidence check when possible.

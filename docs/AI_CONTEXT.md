@@ -1,35 +1,44 @@
 # AI_CONTEXT.md
 
 ## Project
-Default SaaS template for a Next.js application with Supabase for auth and data, Stripe for billing, Vercel for hosting, Playwright for end-to-end checks, and Sentry for monitoring.
-Replace this summary with the actual product description after cloning the template.
+"Невидимка" is an AI mentor delivered through a Telegram bot and a Telegram Mini App/PWA. It supports onboarding, daily planning, focus sessions, evidence and ideas, reflection, analytics, AI mentor chat, content publication, and video preparation.
 
 ## Current Priority
-Keep the template consistent, safe, and easy to reuse across future SaaS projects.
+Stabilize the implemented Releases 1-4 before expanding product scope: restore CI, align docs, harden database roles and privacy deletion, and verify external integrations in a real environment.
 
 ## Stack
-- Framework: Next.js (App Router)
-- Language: TypeScript
-- Database: Postgres via Supabase
-- Hosting: Vercel
-- Payments: Stripe
-- UI: React + Tailwind CSS
-- Testing: Playwright + unit tests via Vitest or Jest
-- Monitoring: Sentry
+- Monorepo: npm workspaces, Node.js 20+, TypeScript
+- Bot: grammY and Express webhook/long polling
+- Web: Next.js App Router, React, Tailwind CSS, PWA
+- Database: Postgres, SQL migrations, RLS, `pg`
+- AI: Anthropic API with Zod-validated role responses
+- ASR: OpenAI-compatible Whisper transcription endpoint
+- Video: ffmpeg/ffprobe background worker
+- Logging: Pino
+- Testing: Node test runner, Playwright, real Postgres and ffmpeg integration tests
+- Runtime packaging: Docker multi-stage images and Docker Compose
+
+## Working Directory
+Run application commands from `nevidimka/` until the repository layout is intentionally flattened.
 
 ## Commands
-- dev: `pnpm dev`
-- lint: `pnpm lint`
-- typecheck: `pnpm typecheck`
-- test: `pnpm test`
-- build: `pnpm build`
+- Install: `npm ci`
+- Bot development: `npm run dev:bot`
+- Web development: `npm run --workspace=apps/web dev`
+- Worker development: `npm run --workspace=apps/worker dev`
+- Typecheck: `npm run typecheck`
+- Test: `npm test`
+- Build: `npm run build`
 
 ## Architecture
-- `app/` or `src/app/`: routes, layouts, server components, route handlers
-- `components/`: reusable UI and feature components
-- `lib/`: shared clients, formatters, adapters, utilities
-- `server/`: business logic, actions, service layer, webhook handlers
-- `supabase/` or `db/`: migrations, policies, seeds, generated types
+- `nevidimka/apps/bot`: Telegram command and conversation flows
+- `nevidimka/apps/web`: Mini App/PWA screens and authenticated API routes
+- `nevidimka/apps/worker`: video queue polling, processing, and publication
+- `nevidimka/packages/db`: migrations, RLS, connection contexts, repositories
+- `nevidimka/packages/ai`: provider client, role orchestration, prompts, schemas
+- `nevidimka/packages/video`: ASR and ffmpeg pipeline
+- `nevidimka/packages/telegram`: shared Telegram Bot API client
+- `nevidimka/packages/shared-types`: cross-workspace domain types and validation
 
 ## Rules
 - Prefer small diffs.
@@ -40,7 +49,8 @@ Keep the template consistent, safe, and easy to reuse across future SaaS project
 - Use `docs/MCP_SERVERS.md`, `docs/TOOLS.md`, and `docs/MEMORY.md` as the operational layer for tools and memory.
 
 ## Known Risks
-- RLS or auth regressions can expose protected data.
-- Stripe webhook mistakes can create billing drift.
-- Vercel env or config mistakes can break production at deploy time.
-- Missing Sentry coverage can hide runtime failures after release.
+- The root-level and application-level project documentation may drift.
+- Separate database credentials and restricted-role RLS still need real Postgres/CI verification.
+- Local video storage complicates scaling and backup even though account cleanup now covers its files.
+- ASR and Docker deployment have not completed a real production smoke test.
+- Worker failures currently rely primarily on logs rather than health metrics and alerts.

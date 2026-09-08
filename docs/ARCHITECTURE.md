@@ -1,49 +1,43 @@
 # ARCHITECTURE.md
 
 ## Overview
-This template assumes a Next.js App Router web app with a React UI, server-side business logic, Supabase-backed persistence, Stripe billing, Vercel deployment, and Sentry monitoring.
-Most authenticated user flows should follow this pattern:
-- request enters via route, page, action, or webhook
-- server or service layer validates auth and business rules
-- data access happens through Supabase or database helpers
-- external billing logic goes through Stripe adapters or handlers
-- observability flows through logs and Sentry where relevant
+The product is an npm workspaces monorepo with three runtime applications: a Telegram bot, a Next.js Mini App/PWA, and a background video worker. Shared packages own database access, AI orchestration, Telegram integration, video processing, logging, and domain types.
 
 ## Main Areas
-- `app/` or `src/app/`: routes, layouts, pages
-- `components/`: reusable UI and presentation logic
-- `lib/`: shared clients, helpers, adapters
-- `server/`: business logic, actions, services, jobs
-- `db/` or `supabase/`: schema, migrations, policies, seeds
-- `docs/`: project memory and operating rules
+- `nevidimka/apps/bot`: Telegram transport and user conversation state
+- `nevidimka/apps/web`: UI, session authentication, CSRF gate, API routes
+- `nevidimka/apps/worker`: video queue claims, ffmpeg pipeline, publication
+- `nevidimka/packages/db`: persistence and RLS enforcement
+- `nevidimka/packages/ai`: provider retries, role prompts, response schemas, cost logging
+- `nevidimka/packages/video`: probing, transcription, cuts, transforms, previews
+- `nevidimka/packages/telegram`: Telegram Bot API operations
+- `nevidimka/packages/shared-types`: shared domain contracts
 
-## Data Flow
-Document the normal path for a user action.
-
-Example:
-UI -> route or server action -> domain or service layer -> database or external API -> response -> UI
-
-Billing example:
-User action -> server action or route handler -> Stripe adapter -> webhook confirmation -> database update -> UI refresh
-
-Auth example:
-User login or session check -> auth layer -> Supabase session/user context -> protected query or mutation -> UI
+## Data Flows
+- Bot: Telegram update -> grammY middleware -> handler -> shared package -> Postgres/AI/Telegram -> reply
+- Web: Telegram `initData` -> signed session cookie -> API route -> shared package -> Postgres/AI -> JSON -> React UI
+- Video: Telegram upload -> shared `VIDEO_STORAGE_ROOT` + DB asset -> worker claim -> ASR/ffmpeg -> preview -> user confirmation -> final render -> Telegram publication
+- Reminder: hourly cron -> system-scoped user query -> timezone check -> Telegram message
 
 ## Critical Boundaries
-- Keep UI concerns in components.
-- Keep business rules in a server or domain layer.
-- Keep external services behind dedicated adapters or clients.
-- Keep database access consistent and policy-aware.
-- Isolate auth, billing, and analytics integrations from page-level code.
+- Every user-owned database operation must run through `withUserContext`.
+- `DATABASE_URL` must use a `NOBYPASSRLS` role; migrations and reviewed system operations use the distinct `SYSTEM_DATABASE_URL` pool.
+- Account deletion may remove only paths contained by `EVIDENCE_STORAGE_ROOT` or `VIDEO_STORAGE_ROOT`, including real-path checks against symlink escape.
+- Bot and web must share domain behavior rather than independently reimplementing rules.
+- Publication must remain idempotent and require explicit confirmation.
+- External providers must stay behind package-level adapters with timeouts and bounded retries.
+- Video paths must never be accepted directly from client input.
 
 ## High-Risk Areas
-- Authentication and authorization
-- Billing, subscriptions, and webhooks
-- Database schema and RLS
-- Background jobs and retries
-- Production config and secrets handling
+- Telegram authentication, sessions, and owner gate
+- Database roles, schema, migrations, and RLS
+- Publication, editing, and deletion of channel messages
+- AI privacy and spending controls
+- Local file storage and account deletion
+- Worker recovery, duplicate jobs, and retries
+- Production config, secrets, and deployment
 
 ## Notes
-- Prefer server-side enforcement for permissions and billing-sensitive operations.
-- Keep Stripe webhook handling isolated from page-level UI code.
-- Keep Supabase policies and schema decisions documented when they change.
+- The application remains nested under `nevidimka/` for now. Root CI uses that directory explicitly.
+- `packages/db/src/repository.ts` is a known oversized module and should be split by domain without changing its public contracts.
+- Local disk storage is acceptable for owner-only development; all deleting processes must mount both roots, but private object storage remains the multi-user target.

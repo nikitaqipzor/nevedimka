@@ -1,0 +1,96 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    working-directory: nevidimka
+
+jobs:
+  typecheck-and-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Reject tracked TypeScript build metadata
+        run: |
+          tracked_build_info="$(git ls-files '*.tsbuildinfo')"
+          if [ -n "$tracked_build_info" ]; then
+            echo "Tracked tsbuildinfo files must be removed:"
+            printf '%s\n' "$tracked_build_info"
+            exit 1
+          fi
+
+      - name: Validate deployment configuration
+        run: |
+          bash -n docker/postgres-init-app-role.sh
+          ENV_FILE=.env.example docker compose config --quiet
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: nevidimka/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck all workspaces
+        run: npm run typecheck
+
+      - name: Build all workspaces
+        run: npm run build
+
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: typecheck-and-build
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: nevidimka/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Install ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
+      - name: Build all workspaces
+        run: npm run build
+
+      - name: Run tests
+        run: npm test

@@ -1,13 +1,23 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join, resolve } from "node:path";
 import type { Bot } from "grammy";
 import type { BotContext } from "../types.js";
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-// apps/bot/storage/evidence — kept outside src/ so it survives `tsc` builds.
-const EVIDENCE_DIR = join(__dirname, "..", "..", "storage", "evidence");
+export type TelegramStorageKind = "evidence" | "video";
+
+export function resolveTelegramStorageDirectory(
+  kind: TelegramStorageKind,
+  env: NodeJS.ProcessEnv = process.env,
+  cwd = process.cwd()
+): string {
+  if (kind === "video") {
+    return resolve(env.VIDEO_STORAGE_ROOT ?? join(cwd, "storage", "video"), "uploads");
+  }
+  return resolve(
+    env.EVIDENCE_STORAGE_ROOT ?? join(cwd, "apps", "bot", "storage", "evidence")
+  );
+}
 
 /**
  * Downloads a Telegram file (voice/video note) via the Bot API and stores
@@ -19,9 +29,11 @@ const EVIDENCE_DIR = join(__dirname, "..", "..", "storage", "evidence");
 export async function saveTelegramFile(
   bot: Bot<BotContext>,
   fileId: string,
-  extension: string
+  extension: string,
+  kind: TelegramStorageKind
 ): Promise<string> {
-  await mkdir(EVIDENCE_DIR, { recursive: true });
+  const storageDirectory = resolveTelegramStorageDirectory(kind);
+  await mkdir(storageDirectory, { recursive: true });
 
   const file = await bot.api.getFile(fileId);
   if (!file.file_path) {
@@ -36,7 +48,7 @@ export async function saveTelegramFile(
   }
   const buffer = Buffer.from(await res.arrayBuffer());
 
-  const localPath = join(EVIDENCE_DIR, `${randomUUID()}.${extension}`);
+  const localPath = join(storageDirectory, `${randomUUID()}.${extension}`);
   await writeFile(localPath, buffer);
   return localPath;
 }
