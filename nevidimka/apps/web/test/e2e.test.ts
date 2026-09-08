@@ -1106,6 +1106,31 @@ test("Отложить: PATCH to paused persists in the DB (not just the HTTP re
   );
 });
 
+test("/api/settings: zero active missions returns programLength/day0Date as null instead of throwing or faking a default", async () => {
+  // Fresh telegram_id, same reasoning as the other multi-mission tests
+  // above — this user gets zero missions on purpose (no db.createMission
+  // call at all), so getActiveMissions returns [] and the route's
+  // primaryMission fallback is null.
+  const telegramId = "700111800";
+  const initData = buildTelegramInitData(telegramId, "Тест Без Целей");
+  const sameOriginHeaders = { "Sec-Fetch-Site": "same-origin" };
+  const authRes = await fetch(`${BASE}/api/auth/miniapp`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...sameOriginHeaders },
+    body: JSON.stringify({ initData }),
+  });
+  assert.equal(authRes.status, 200, "initData signed with the test bot token must authenticate");
+  const setCookie = authRes.headers.get("set-cookie") ?? "";
+  const cookieHeader = setCookie.split(";")[0];
+  assert.ok(cookieHeader.startsWith("nevidimka_session="), "must receive a session cookie");
+
+  const settingsRes = await fetch(`${BASE}/api/settings`, { headers: { Cookie: cookieHeader } });
+  assert.equal(settingsRes.status, 200, "zero active missions must not error the settings route");
+  const settingsBody = (await settingsRes.json()) as { programLength: number | null; day0Date: string | null };
+  assert.equal(settingsBody.programLength, null, "no active mission means no representative programLength");
+  assert.equal(settingsBody.day0Date, null, "no active mission means no representative day0Date");
+});
+
 test("/analytics: 'что ты заметил' button triggers the behavior-analyst AI and renders a real observation", async () => {
   await page.goto(`${BASE}/analytics`, { waitUntil: "domcontentloaded" });
   assert.ok(await waitForText(page, "Что ты заметил?"));

@@ -182,6 +182,18 @@ test("/post: publish refuses gracefully when the user has no active missions yet
   assert.equal(publications.length, 0, "no active mission means nothing should be published");
 });
 
+test("/evening: refuses gracefully when the user has no active missions yet", async () => {
+  // Same zero-mission window as the /post test above — runs before
+  // onboarding creates a mission. handleEveningRequest checks the
+  // active-mission count before creating/touching today's plan, so this
+  // must never get far enough to write a daily_plans row.
+  const plansBefore = await dbRows(`select * from daily_plans where user_id = '${userId}'`);
+  await bot.handleUpdate(textUpdate("/evening"));
+  assert.match(lastBotReply(tgCalls) ?? "", /нечего подводить/i);
+  const plansAfter = await dbRows(`select * from daily_plans where user_id = '${userId}'`);
+  assert.equal(plansAfter.length, plansBefore.length, "no active mission means no daily_plan should be created");
+});
+
 test("onboarding: Day 0 button -> commitment -> goal -> length -> directions -> AI strategist -> accept", async () => {
   await bot.handleUpdate(callbackUpdate("onboarding:day0_confirm"));
   assert.match(lastBotReply(tgCalls) ?? "", /договор/);

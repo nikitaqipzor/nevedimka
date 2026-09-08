@@ -47,3 +47,33 @@ User login or session check -> auth layer -> Supabase session/user context -> pr
 - Prefer server-side enforcement for permissions and billing-sensitive operations.
 - Keep Stripe webhook handling isolated from page-level UI code.
 - Keep Supabase policies and schema decisions documented when they change.
+
+## Multiple Active Goals (missions)
+
+A user can hold up to `MAX_ACTIVE_MISSIONS` (5, `packages/shared-types`) simultaneously
+active missions instead of exactly one. Key structural points:
+
+- `missions.day0_date` / `missions.program_length` are per-mission (migration 011);
+  `users.day0_date` / `users.program_length` were dropped — there is no longer an
+  account-wide start date or program length.
+- The one-active-mission-per-user unique index was replaced by a race-safe trigger
+  (`enforce_active_mission_limit`, migration 011) that takes an advisory xact lock on
+  the user before counting active missions, so concurrent inserts can't both slip
+  past the cap under READ COMMITTED.
+- `getActiveMission` (singular) was replaced by `getActiveMissions` (plural, ordered
+  oldest-first by `created_at`). Every call site picks explicitly: `/today` plans and
+  reports one main task per active mission in a single AI call
+  (`planDayForMissions`); jobs/handlers that need a single representative value
+  (e.g. a shared `DailyPlan.dayNumber`, or `/api/settings`'s "День 0" display) use the
+  oldest active mission (`missions[0]`); the publish caption in `apps/worker` uses the
+  most-recently-active mission (`missions[missions.length - 1]`) instead.
+- `daily_plans.main_task_id` is no longer written by `createTask` — with N active
+  missions there can be N main tasks per plan. "Already planned for today" is
+  determined by querying `listTasksForPlan` and filtering `.isMainTask`, not by a
+  single foreign key. The column stays on the table (nullable, unused) rather than
+  being dropped.
+- The Mini App "Путь" screen (`apps/web/src/app/path`) is a goal list with a detail
+  view keyed by `missionId` (`/api/path?missionId=...`), not a singleton. Missions can
+  transition `active -> paused` ("Отложить") or `active -> completed`/`abandoned` via
+  `PATCH /api/missions/[id]`, which reuses the same DB trigger for cap enforcement on
+  reactivation (`paused -> active`).
