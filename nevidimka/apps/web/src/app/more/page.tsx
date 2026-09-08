@@ -12,6 +12,12 @@ const ITEMS = [
   { href: "/settings", label: "Настройки", hint: "Часовой пояс и время напоминаний", icon: Settings },
 ];
 
+// Deliberately NOT in the list above: /onboarding is only reachable from the
+// empty states on Today and Path. Once a mission exists, create_mission
+// answers 409 (one active mission per user — migration 008), so a permanent
+// entry here would be a link to a dead end. Changing an existing mission is
+// done in place on the Path screen instead.
+
 export default function MorePage() {
   return (
     <div className="px-5 pt-6">

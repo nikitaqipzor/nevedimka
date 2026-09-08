@@ -3,16 +3,28 @@
 import { useEffect, useState } from "react";
 import type { Idea } from "@nevidimka/shared-types";
 import { apiFetch } from "@/lib/apiClient";
-import { EmptyState, Eyebrow, Panel, PrimaryButton } from "@/components/ui";
+import { EmptyState, Eyebrow, LoadState, Panel, PrimaryButton } from "@/components/ui";
 
 export default function IdeasPage() {
   const [ideas, setIdeas] = useState<Idea[] | null>(null);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
 
+  const [loadState, setLoadState] = useState<"loading" | "ready" | "error" | "offline">("loading");
+
+  // Also called after add/convert, so it keeps its own function rather than
+  // using useLoad. An unhandled rejection here used to leave the screen on
+  // "Загрузка…" forever — offline made that the normal outcome.
   async function load() {
-    const res = await apiFetch<{ ideas: Idea[] }>("/api/ideas");
-    setIdeas(res.ideas);
+    try {
+      const res = await apiFetch<{ ideas: Idea[] }>("/api/ideas");
+      setIdeas(res.ideas);
+      setLoadState("ready");
+    } catch {
+      setLoadState(
+        typeof navigator !== "undefined" && !navigator.onLine ? "offline" : "error"
+      );
+    }
   }
 
   useEffect(() => {
@@ -50,7 +62,9 @@ export default function IdeasPage() {
       </Panel>
 
       <div className="mt-4 space-y-2">
-        {ideas === null && <div className="text-sm text-ink-faint">Загрузка…</div>}
+        {ideas === null && (
+          <LoadState state={loadState} error={null} onRetry={load} />
+        )}
         {ideas?.length === 0 && <EmptyState title="Хранилище пусто" />}
         {ideas?.map((idea) => (
           <Panel key={idea.id}>

@@ -274,6 +274,14 @@ export interface VideoAsset {
   height?: number;
   status: VideoAssetStatus;
   errorMessage?: string;
+  /**
+   * How many times this job has been claimed for processing. Never reset,
+   * so it survives the requeues done by recoverStaleVideoJobs and bounds
+   * automatic retry (PROJECT_SPEC.md section 14).
+   */
+  attempts: number;
+  /** Earliest time this job may be claimed again; undefined = claimable now. */
+  nextRetryAt?: ISODateTimeString;
   createdAt: ISODateTimeString;
   updatedAt: ISODateTimeString;
 }

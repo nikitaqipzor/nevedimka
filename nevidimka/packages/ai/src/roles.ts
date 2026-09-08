@@ -1,4 +1,6 @@
 import type { ZodType } from "zod";
+import { logAiCall } from "@nevidimka/db";
+import type { AiRole } from "@nevidimka/shared-types";
 import { AiResponseParseError, callRole, parseJsonResponse, type CallRoleResult } from "./client.js";
 import { loadPrompt } from "./prompts.js";
 import {
@@ -52,6 +54,85 @@ function parseRoleOutput<T>(roleName: string, schema: ZodType<T>, result: CallRo
   }
 }
 
+/**
+ * Records a role call that was billed by Anthropic but never produced usable
+ * output, so the spend still lands in ai_logs.
+ *
+ * Why this lives here and not in the callers: AiResponseParseError was built
+ * to carry cost data specifically so a caller could log it — but no caller
+ * ever caught it. Every call site follows the same shape (catch
+ * AiRateLimitExceededError, rethrow everything else, then logAiCall on the
+ * success path only), so a parse failure escaped past the logging line
+ * entirely. Two consequences, both silent: real Anthropic spend went
+ * unrecorded, and — because assertAiRateLimit counts rows in ai_logs — a
+ * role whose output keeps failing validation never counted against the rate
+ * limit, so a persistently malformed response could be retried in a loop
+ * without ever tripping the backstop that exists to catch exactly that.
+ *
+ * Logging here, at the throw site, fixes it for all nine roles at once and
+ * cannot be forgotten by a future call site. Failures to log are swallowed:
+ * this runs while already handling an error, and the original
+ * AiResponseParseError is far more useful to the caller than a secondary
+ * database error replacing it.
+ */
+async function logFailedRoleCall(
+  role: AiRole,
+  userId: string | undefined,
+  input: unknown,
+  result: CallRoleResult,
+  reason: string
+): Promise<void> {
+  if (!userId) return; // no user context — nothing to attribute the spend to
+  try {
+    await logAiCall({
+      userId,
+      role,
+      input,
+      output: { error: "response_validation_failed", reason, raw: result.raw.slice(0, 2000) },
+      tokensIn: result.tokensIn,
+      tokensOut: result.tokensOut,
+      costUsd: result.costUsd,
+    });
+  } catch {
+    // Deliberately ignored — see the doc comment above.
+  }
+}
+
+/**
+ * Wraps callRole + parseRoleOutput so a validation failure is logged to
+ * ai_logs before the error propagates. Every role below goes through this.
+ */
+async function callAndParseRole<T>(params: {
+  role: AiRole;
+  schema: ZodType<T>;
+  systemPrompt: string;
+  input: unknown;
+  maxTokens: number;
+  userId?: string;
+}): Promise<{ output: T } & RoleCallMeta> {
+  const result = await callRole({
+    systemPrompt: params.systemPrompt,
+    input: params.input,
+    maxTokens: params.maxTokens,
+    userId: params.userId,
+  });
+
+  try {
+    const output = parseRoleOutput(params.role, params.schema, result);
+    return {
+      output,
+      tokensIn: result.tokensIn,
+      tokensOut: result.tokensOut,
+      costUsd: result.costUsd,
+    };
+  } catch (err) {
+    if (err instanceof AiResponseParseError) {
+      await logFailedRoleCall(params.role, params.userId, params.input, result, err.message);
+    }
+    throw err;
+  }
+}
+
 export interface DayPlannerInput {
   userFirstName: string;
   dayNumber: number;
@@ -72,13 +153,14 @@ export async function planDay(
   input: DayPlannerInput,
   userId: string
 ): Promise<{ output: DayPlannerOutput } & RoleCallMeta> {
-  const result = await callRole({
+  return callAndParseRole({
+    role: "day_planner",
+    schema: DayPlannerOutputSchema,
     systemPrompt: loadPrompt("day_planner"),
     input,
+    maxTokens: 1024,
     userId,
   });
-  const output = parseRoleOutput("planDay", DayPlannerOutputSchema, result);
-  return { output, tokensIn: result.tokensIn, tokensOut: result.tokensOut, costUsd: result.costUsd };
 }
 
 export interface ActionCoachInput {
@@ -90,13 +172,14 @@ export async function coachAction(
   input: ActionCoachInput,
   userId: string
 ): Promise<{ output: ActionCoachOutput } & RoleCallMeta> {
-  const result = await callRole({
+  return callAndParseRole({
+    role: "action_coach",
+    schema: ActionCoachOutputSchema,
     systemPrompt: loadPrompt("action_coach"),
     input,
+    maxTokens: 1024,
     userId,
   });
-  const output = parseRoleOutput("coachAction", ActionCoachOutputSchema, result);
-  return { output, tokensIn: result.tokensIn, tokensOut: result.tokensOut, costUsd: result.costUsd };
 }
 
 export interface ResultReviewerInput {
@@ -109,13 +192,14 @@ export async function reviewEvidence(
   input: ResultReviewerInput,
   userId: string
 ): Promise<{ output: ResultReviewerOutput } & RoleCallMeta> {
-  const result = await callRole({
+  return callAndParseRole({
+    role: "result_reviewer",
+    schema: ResultReviewerOutputSchema,
     systemPrompt: loadPrompt("result_reviewer"),
     input,
+    maxTokens: 1024,
     userId,
   });
-  const output = parseRoleOutput("reviewEvidence", ResultReviewerOutputSchema, result);
-  return { output, tokensIn: result.tokensIn, tokensOut: result.tokensOut, costUsd: result.costUsd };
 }
 
 export interface StrategistInput {
@@ -128,13 +212,14 @@ export async function draftMission(
   input: StrategistInput,
   userId: string
 ): Promise<{ output: StrategistOutput } & RoleCallMeta> {
-  const result = await callRole({
+  return callAndParseRole({
+    role: "strategist",
+    schema: StrategistOutputSchema,
     systemPrompt: loadPrompt("strategist"),
     input,
+    maxTokens: 1024,
     userId,
   });
-  const output = parseRoleOutput("draftMission", StrategistOutputSchema, result);
-  return { output, tokensIn: result.tokensIn, tokensOut: result.tokensOut, costUsd: result.costUsd };
 }
 
 export interface MentorChatInput {
@@ -155,14 +240,14 @@ export async function chatWithMentor(
   input: MentorChatInput,
   userId: string
 ): Promise<{ output: MentorChatOutput } & RoleCallMeta> {
-  const result = await callRole({
+  return callAndParseRole({
+    role: "orchestrator",
+    schema: MentorChatOutputSchema,
     systemPrompt: loadPrompt("mentor_chat"),
     input,
-    userId,
     maxTokens: 1024,
+    userId,
   });
-  const output = parseRoleOutput("chatWithMentor", MentorChatOutputSchema, result);
-  return { output, tokensIn: result.tokensIn, tokensOut: result.tokensOut, costUsd: result.costUsd };
 }
 
 export interface TextEditorInput {
@@ -173,14 +258,14 @@ export async function editText(
   input: TextEditorInput,
   userId: string
 ): Promise<{ output: TextEditorOutput } & RoleCallMeta> {
-  const result = await callRole({
+  return callAndParseRole({
+    role: "text_editor",
+    schema: TextEditorOutputSchema,
     systemPrompt: loadPrompt("text_editor"),
     input,
-    userId,
     maxTokens: 2048,
+    userId,
   });
-  const output = parseRoleOutput("editText", TextEditorOutputSchema, result);
-  return { output, tokensIn: result.tokensIn, tokensOut: result.tokensOut, costUsd: result.costUsd };
 }
 
 export interface PrivacyGuardInput {
@@ -191,14 +276,14 @@ export async function checkPrivacy(
   input: PrivacyGuardInput,
   userId: string
 ): Promise<{ output: PrivacyGuardOutput } & RoleCallMeta> {
-  const result = await callRole({
+  return callAndParseRole({
+    role: "privacy_guard",
+    schema: PrivacyGuardOutputSchema,
     systemPrompt: loadPrompt("privacy_guard"),
     input,
-    userId,
     maxTokens: 1024,
+    userId,
   });
-  const output = parseRoleOutput("checkPrivacy", PrivacyGuardOutputSchema, result);
-  return { output, tokensIn: result.tokensIn, tokensOut: result.tokensOut, costUsd: result.costUsd };
 }
 
 export interface BehaviorAnalystInput {
@@ -216,14 +301,14 @@ export async function analyzeBehavior(
   input: BehaviorAnalystInput,
   userId: string
 ): Promise<{ output: BehaviorAnalystOutput } & RoleCallMeta> {
-  const result = await callRole({
+  return callAndParseRole({
+    role: "behavior_analyst",
+    schema: BehaviorAnalystOutputSchema,
     systemPrompt: loadPrompt("behavior_analyst"),
     input,
-    userId,
     maxTokens: 512,
+    userId,
   });
-  const output = parseRoleOutput("analyzeBehavior", BehaviorAnalystOutputSchema, result);
-  return { output, tokensIn: result.tokensIn, tokensOut: result.tokensOut, costUsd: result.costUsd };
 }
 
 export interface SkillsMentorInput {
@@ -234,12 +319,12 @@ export async function guideSkills(
   input: SkillsMentorInput,
   userId: string
 ): Promise<{ output: SkillsMentorOutput } & RoleCallMeta> {
-  const result = await callRole({
+  return callAndParseRole({
+    role: "skills_mentor",
+    schema: SkillsMentorOutputSchema,
     systemPrompt: loadPrompt("skills_mentor"),
     input,
-    userId,
     maxTokens: 512,
+    userId,
   });
-  const output = parseRoleOutput("guideSkills", SkillsMentorOutputSchema, result);
-  return { output, tokensIn: result.tokensIn, tokensOut: result.tokensOut, costUsd: result.costUsd };
 }

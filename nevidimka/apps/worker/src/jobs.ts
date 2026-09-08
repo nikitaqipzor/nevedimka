@@ -49,7 +49,9 @@ export async function processUploadedAsset(asset: VideoAsset): Promise<void> {
   const outputDir = outputDirFor(asset.id);
 
   try {
-    await updateVideoAssetStatus(asset.userId, asset.id, "processing");
+    // Status is already 'processing': claimVideoAssetsForProcessing sets it
+    // atomically when the job is claimed, so no other worker can pick this
+    // asset up. Re-setting it here would be a no-op.
     await mkdir(workDir, { recursive: true });
     await mkdir(outputDir, { recursive: true });
 
@@ -144,7 +146,8 @@ export async function processConfirmedAsset(asset: VideoAsset): Promise<void> {
   const outputDir = outputDirFor(asset.id);
 
   try {
-    await updateVideoAssetStatus(asset.userId, asset.id, "rendering");
+    // Already 'rendering' — set atomically at claim time, same as the
+    // 'processing' transition in processUploadedAsset above.
     const masterPath = masterPathFor(asset.id);
     const finalPath = join(outputDir, "final.mp4");
     await runFinalRender(masterPath, finalPath);

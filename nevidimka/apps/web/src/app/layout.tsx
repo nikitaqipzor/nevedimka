@@ -28,7 +28,16 @@ export const viewport: Viewport = {
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="ru">
+    /*
+     * suppressHydrationWarning on <html> only: telegram-web-app.js (loaded
+     * below with strategy="beforeInteractive") sets --tg-viewport-height and
+     * --tg-viewport-stable-height as inline styles on this element before
+     * React hydrates. The server never renders those, so React reports a
+     * mismatch on every page load — noise in dev, and it says nothing about
+     * our own markup. Scoped to this one element, so a genuine mismatch
+     * anywhere inside the app is still reported.
+     */
+    <html lang="ru" suppressHydrationWarning>
       <body className="font-sans antialiased">
         <Script src="https://telegram.org/js/telegram-web-app.js" strategy="beforeInteractive" />
         <Script id="sw-register" strategy="afterInteractive">

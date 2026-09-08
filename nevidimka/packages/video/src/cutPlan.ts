@@ -67,3 +67,61 @@ export function cutsToKeepSegments(
   }
   return keep.filter((seg) => seg.end - seg.start > 0.05);
 }
+
+/**
+ * Remaps transcript segment timestamps from the ORIGINAL timeline onto the
+ * post-cut timeline, so subtitles stay in sync with the video that cuts
+ * were actually applied to.
+ *
+ * Why this exists: runPipelineToPreview transcribes the original audio
+ * (timestamps relative to the original duration), then applyCuts physically
+ * removes the cut ranges and rebases the result with
+ * setpts=PTS-STARTPTS/concat — which compresses the timeline. Embedding the
+ * untouched original timestamps into that shortened video drifts every
+ * caption forward by the total duration removed before it, accumulating
+ * over the clip. Since cuts come from silences >= 1.5s, which are common in
+ * real speech, the drift reaches whole seconds by the end.
+ *
+ * Mapping rule, matching cutsToKeepSegments' output exactly (that function
+ * is the single source of truth for what survives the edit):
+ *  - a segment is clipped to each kept interval it overlaps, so a caption
+ *    spanning a cut is split into the parts that remain audible;
+ *  - the surviving part's timestamps are shifted back by the amount of
+ *    footage removed before it (its offset within the concatenated output);
+ *  - a segment falling entirely inside a cut is dropped — that speech is
+ *    no longer in the video, so a caption for it would be a lie;
+ *  - degenerate slivers shorter than 10ms are dropped: SRT's millisecond
+ *    resolution can't represent them, and a zero-length cue is invalid.
+ *
+ * Text is duplicated across split parts rather than apportioned: there is
+ * no word-level timing available here (Whisper's verbose_json gives
+ * segment-level timestamps — see asr.ts), and showing the full line for
+ * both halves reads far better than truncating mid-sentence.
+ */
+export function remapSegmentsToKeptTimeline<T extends { start: number; end: number }>(
+  segments: T[],
+  keep: { start: number; end: number }[]
+): T[] {
+  const remapped: T[] = [];
+  let elapsed = 0;
+
+  for (const kept of keep) {
+    const keptDuration = kept.end - kept.start;
+
+    for (const seg of segments) {
+      const overlapStart = Math.max(seg.start, kept.start);
+      const overlapEnd = Math.min(seg.end, kept.end);
+      if (overlapEnd - overlapStart < 0.01) continue;
+
+      remapped.push({
+        ...seg,
+        start: elapsed + (overlapStart - kept.start),
+        end: elapsed + (overlapEnd - kept.start),
+      });
+    }
+
+    elapsed += keptDuration;
+  }
+
+  return remapped.sort((a, b) => a.start - b.start);
+}

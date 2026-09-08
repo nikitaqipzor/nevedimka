@@ -1,12 +1,15 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import Link from "next/link";
+
+import { useState } from "react";
 import type { Task } from "@nevidimka/shared-types";
 import { apiFetch } from "@/lib/apiClient";
+import { useLoad } from "@/lib/useLoad";
 import { DayGauge } from "@/components/DayGauge";
 import { CheckInForm } from "@/components/CheckInForm";
 import { TaskCard } from "@/components/TaskCard";
-import { EmptyState, Eyebrow, Panel } from "@/components/ui";
+import { EmptyState, Eyebrow, LoadState, Panel, PrimaryButton } from "@/components/ui";
 
 interface TodayResponse {
   state: "no_mission" | "needs_checkin" | "no_plan_yet" | "ready";
@@ -23,17 +26,13 @@ interface TodayResponse {
 }
 
 export default function TodayPage() {
-  const [data, setData] = useState<TodayResponse | null>(null);
   const [busy, setBusy] = useState(false);
-
-  const load = useCallback(async () => {
-    const res = await apiFetch<TodayResponse>("/api/today");
-    setData(res);
-  }, []);
-
-  useEffect(() => {
-    load();
-  }, [load]);
+  const {
+    data,
+    state: loadState,
+    error: loadError,
+    reload: load,
+  } = useLoad<TodayResponse>(() => apiFetch<TodayResponse>("/api/today"));
 
   async function submitCheckIn(values: {
     sleepQuality: number;
@@ -53,8 +52,11 @@ export default function TodayPage() {
     }
   }
 
-  if (!data) {
-    return <div className="px-5 pt-8 text-sm text-ink-faint">Загрузка…</div>;
+  // Loading, offline, and error all render here; only a successful load
+  // falls through to the screen itself. `data` can still be null on an
+  // error after a previous success, so the guard stays.
+  if (loadState !== "ready" || !data) {
+    return <LoadState state={loadState} error={loadError} onRetry={load} />;
   }
 
   if (data.state === "no_mission") {
@@ -64,8 +66,11 @@ export default function TodayPage() {
         <div className="mt-6">
           <EmptyState
             title="Миссия ещё не запущена"
-            hint="Заверши онбординг в боте — команда /start."
+            hint="Можно начать прямо здесь — или командой /start в боте."
           />
+          <Link href="/onboarding" className="mt-4 block">
+            <PrimaryButton className="w-full">Начать путь</PrimaryButton>
+          </Link>
         </div>
       </div>
     );

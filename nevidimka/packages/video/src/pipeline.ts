@@ -1,7 +1,12 @@
 import { join } from "node:path";
 import { probeVideo, validateVideoProbe, type VideoProbe } from "./probe.js";
 import { detectSilences } from "./silence.js";
-import { proposeCutsFromSilence, type VideoCut } from "./cutPlan.js";
+import {
+  cutsToKeepSegments,
+  proposeCutsFromSilence,
+  remapSegmentsToKeptTimeline,
+  type VideoCut,
+} from "./cutPlan.js";
 import { transcribeVideoAudio, type VideoTranscript } from "./asr.js";
 import { segmentsToSrt } from "./srt.js";
 import {
@@ -81,13 +86,26 @@ export async function runPipelineToPreview(
 
   let processedPath = normalizedPath;
   if (transcript && transcript.segments.length > 0) {
-    const srtPath = join(workDir, "captions.srt");
-    const { writeFile } = await import("node:fs/promises");
-    await writeFile(srtPath, segmentsToSrt(transcript.segments), "utf8");
+    // The transcript's timestamps are on the ORIGINAL timeline, but the
+    // video these subtitles get embedded into has already had `cuts`
+    // removed and its timeline compressed by applyCuts. Rebase the
+    // segments onto the post-cut timeline first, or every caption drifts
+    // forward by the footage removed before it. See
+    // remapSegmentsToKeptTimeline in cutPlan.js.
+    const subtitleSegments = remapSegmentsToKeptTimeline(
+      transcript.segments,
+      cutsToKeepSegments(cuts, probe.durationSeconds)
+    );
 
-    const subtitledPath = join(workDir, "04-subtitled.mp4");
-    await embedSubtitles(normalizedPath, srtPath, subtitledPath);
-    processedPath = subtitledPath;
+    if (subtitleSegments.length > 0) {
+      const srtPath = join(workDir, "captions.srt");
+      const { writeFile } = await import("node:fs/promises");
+      await writeFile(srtPath, segmentsToSrt(subtitleSegments), "utf8");
+
+      const subtitledPath = join(workDir, "04-subtitled.mp4");
+      await embedSubtitles(normalizedPath, srtPath, subtitledPath);
+      processedPath = subtitledPath;
+    }
   }
 
   const coverPath = join(workDir, "cover.jpg");

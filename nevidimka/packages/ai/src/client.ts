@@ -51,18 +51,36 @@ export class AiResponseParseError extends Error {
  * Rough per-million-token pricing (USD) for cost tracking in ai_logs —
  * NOT used for billing, just an internal estimate so
  * ai_logs.cost_usd stops being permanently NULL (see AUDIT_REPORT.md).
+ *
+ * Rates verified against Anthropic's published pricing 2026-08-27. Two
+ * entries were wrong before that check: claude-sonnet-5 was listed at the
+ * Sonnet-4.6 rate (3/15 instead of 2/10), and claude-opus-4-8 at 15/75 —
+ * triple its actual 5/25 — so every Opus call's cost_usd was overstated 3x.
+ *
  * Anthropic's published pricing changes over time; check
  * https://docs.claude.com for current rates and update this table
  * alongside AI_MODEL in .env.example if they drift apart.
  */
 const PRICING_PER_MILLION_TOKENS: Record<string, { in: number; out: number }> = {
-  "claude-sonnet-5": { in: 3, out: 15 },
-  "claude-opus-4-8": { in: 15, out: 75 },
-  "claude-haiku-4-5-20251001": { in: 0.8, out: 4 },
+  "claude-opus-5": { in: 5, out: 25 },
+  "claude-opus-4-8": { in: 5, out: 25 },
+  "claude-sonnet-5": { in: 2, out: 10 },
+  "claude-sonnet-4-6": { in: 3, out: 15 },
+  "claude-haiku-4-5": { in: 1, out: 5 },
+  // The dated alias AI_MODEL used to be able to carry. Same model, same rates.
+  "claude-haiku-4-5-20251001": { in: 1, out: 5 },
 };
-const DEFAULT_PRICING = { in: 3, out: 15 };
+// Sonnet-5 rates: the configured default in .env.example. Deliberately the
+// cheapest current tier rather than a mid-range guess, so an unrecognised
+// model under-reports rather than silently inflating cost_usd.
+const DEFAULT_PRICING = { in: 2, out: 10 };
 
-function estimateCostUsd(model: string, tokensIn: number, tokensOut: number): number {
+/**
+ * Exported for testing: this is a money figure that lands in
+ * ai_logs.cost_usd, and two of the rates in the table above were silently
+ * wrong before anyone checked them against published pricing.
+ */
+export function estimateCostUsd(model: string, tokensIn: number, tokensOut: number): number {
   const pricing = PRICING_PER_MILLION_TOKENS[model] ?? DEFAULT_PRICING;
   return (tokensIn / 1_000_000) * pricing.in + (tokensOut / 1_000_000) * pricing.out;
 }

@@ -11,8 +11,16 @@ export default function MentorPage() {
   const [busy, setBusy] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
 
+  const [historyError, setHistoryError] = useState(false);
+
   useEffect(() => {
-    apiFetch<{ messages: MentorMessage[] }>("/api/mentor").then((res) => setMessages(res.messages));
+    // The chat starts from an empty array, so a failure here doesn't hang
+    // the screen — but it must not be an unhandled rejection either, and
+    // the user should know the history isn't there rather than assume the
+    // conversation is empty.
+    apiFetch<{ messages: MentorMessage[] }>("/api/mentor")
+      .then((res) => setMessages(res.messages))
+      .catch(() => setHistoryError(true));
   }, []);
 
   useEffect(() => {
@@ -44,9 +52,14 @@ export default function MentorPage() {
       <Eyebrow>AI-наставник</Eyebrow>
 
       <div className="mt-4 flex-1 space-y-3 overflow-y-auto pb-4">
-        {!messages.length && (
+        {!messages.length && !historyError && (
           <div className="text-sm text-ink-faint">
             Спроси про сегодняшний план, застревание на задаче или общий прогресс.
+          </div>
+        )}
+        {historyError && (
+          <div className="text-sm text-warn">
+            Не удалось загрузить историю. Новые сообщения отправить можно.
           </div>
         )}
         {messages.map((m) => (

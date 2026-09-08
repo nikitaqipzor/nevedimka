@@ -649,6 +649,101 @@ export async function listMilestones(userId: string, missionId: string): Promise
   });
 }
 
+/**
+ * Updates the editable fields of a user's mission. Any field left undefined
+ * is untouched, so a caller can patch just the commitment text without
+ * resending the title.
+ *
+ * Scoped by user_id in the WHERE clause as well as by RLS — the Mini App's
+ * PATCH takes the mission id from the session's active mission, never from
+ * the request body, but the redundant check keeps this safe if a future
+ * caller passes an id in.
+ */
+export async function updateMission(
+  userId: string,
+  missionId: string,
+  fields: {
+    title?: string;
+    description?: string | null;
+    directions?: string[];
+    commitmentText?: string;
+  }
+): Promise<Mission | null> {
+  return withUserContext(userId, async (client) => {
+    const r = await client.query(
+      `update missions set
+         title = coalesce($3, title),
+         description = case when $4::boolean then $5 else description end,
+         directions = coalesce($6::text[], directions),
+         commitment_text = coalesce($7, commitment_text)
+       where id = $1 and user_id = $2
+       returning *`,
+      [
+        missionId,
+        userId,
+        fields.title ?? null,
+        fields.description !== undefined,
+        fields.description ?? null,
+        fields.directions ?? null,
+        fields.commitmentText ?? null,
+      ]
+    );
+    return r.rowCount ? mapMission(r.rows[0]) : null;
+  });
+}
+
+/**
+ * Replaces a mission's milestones wholesale, in one transaction.
+ *
+ * Replace rather than patch: the Path screen edits the milestone list as a
+ * single unit (add, remove, reorder by target day), so diffing individual
+ * rows client-side would be more code and more ways to desync. Doing it in
+ * one withUserContext call means it is one transaction — a failure part-way
+ * leaves the previous list intact rather than a half-replaced one.
+ */
+export async function replaceMilestones(
+  userId: string,
+  missionId: string,
+  milestones: { title: string; targetDay: number }[]
+): Promise<Milestone[]> {
+  return withUserContext(userId, async (client) => {
+    // Ownership check first: the delete below is scoped by mission_id, which
+    // RLS already restricts to this user's missions, but failing loudly on a
+    // foreign id is better than silently deleting nothing and inserting.
+    const owns = await client.query(
+      "select 1 from missions where id = $1 and user_id = $2",
+      [missionId, userId]
+    );
+    if (!owns.rowCount) return [];
+
+    await client.query("delete from milestones where mission_id = $1", [missionId]);
+
+    for (const m of milestones) {
+      await client.query(
+        "insert into milestones (mission_id, title, target_day) values ($1, $2, $3)",
+        [missionId, m.title, m.targetDay]
+      );
+    }
+
+    const r = await client.query(
+      "select * from milestones where mission_id = $1 order by target_day asc",
+      [missionId]
+    );
+    return r.rows.map(mapMilestone);
+  });
+}
+
+/**
+ * Sets the user's Day 0 — the date the program counts from. Needed because
+ * the Mini App's onboarding lets someone start their path today (the
+ * default) or backdate it to when they actually began.
+ */
+export async function setDay0Date(userId: string, day0Date: string): Promise<void> {
+  await withUserContext(userId, (client) =>
+    client.query("update users set day0_date = $2 where id = $1", [userId, day0Date])
+  );
+}
+
 export async function getSkillsProgress(userId: string): Promise<SkillProgress[]> {
   return withUserContext(userId, async (client) => {
     const r = await client.query(
@@ -1151,6 +1246,8 @@ function mapVideoAsset(r: any): VideoAsset {
     height: r.height ?? undefined,
     status: r.status as VideoAssetStatus,
     errorMessage: r.error_message ?? undefined,
+    attempts: r.attempts ?? 0,
+    nextRetryAt: r.next_retry_at ?? undefined,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
   };
@@ -1198,17 +1295,59 @@ export async function createVideoAsset(params: {
 }
 
 /**
- * Cross-user poll for pending video jobs (status='uploaded' awaiting
- * pipeline processing, or 'confirmed' awaiting final render+publish).
- * Same withSystemContext rationale as listUsersForReminder — this has no
+ * Atomically claims pending video jobs for this worker: moves them out of
+ * the queued status ('uploaded' -> 'processing', 'confirmed' -> 'rendering')
+ * and increments their attempt counter, all in one statement.
+ *
+ * Why claiming and not a plain SELECT: this used to be
+ * `select ... where status = $1`, with the status transition happening later
+ * inside processUploadedAsset. Between those two steps the row still looked
+ * queued, so two worker processes (or one worker overlapping its own slow
+ * tick) could both read the same asset and both run the full ffmpeg pipeline
+ * and — for 'confirmed' — both publish. FOR UPDATE SKIP LOCKED plus the
+ * status change inside the same statement closes that window: a second
+ * claimer skips rows already locked by the first, and once committed the row
+ * no longer matches the queued predicate at all.
+ *
+ * `next_retry_at` implements the backoff half of PROJECT_SPEC.md section
+ * 14: recoverStaleVideoJobs sets it when requeueing a job that died, and a
+ * job is not claimable until it passes. NULL means claimable now.
+ *
+ * `attempts` is incremented here — at claim time — rather than on failure,
+ * because the failures this must bound are exactly the ones that never
+ * reach a failure handler (the worker process being killed mid-job).
+ *
+ * Same withSystemContext rationale as listUsersForReminder: this has no
  * single owning user, so it must bypass per-user RLS deliberately, and
  * should only ever be called by the trusted worker process.
  */
-export async function listVideoAssetsByStatus(status: VideoAssetStatus): Promise<VideoAsset[]> {
+export async function claimVideoAssetsForProcessing(
+  status: "uploaded" | "confirmed",
+  limit = 5
+): Promise<VideoAsset[]> {
+  const claimedStatus = status === "uploaded" ? "processing" : "rendering";
+
   return withSystemContext(async (client) => {
     const r = await client.query(
-      "select * from video_assets where status = $1 order by created_at asc limit 5",
-      [status]
+      // $3 is cast explicitly: Postgres cannot infer a parameter's type in
+       // LIMIT position, and an uncast placeholder there fails with
+       // "could not determine data type of parameter $3".
+       `with claimed as (
+         select id from video_assets
+         where status = $1
+           and (next_retry_at is null or next_retry_at <= now())
+         order by created_at asc
+         limit $3::int
+         for update skip locked
+       )
+       update video_assets a
+       set status = $2,
+           attempts = a.attempts + 1,
+           updated_at = now()
+       from claimed
+       where a.id = claimed.id
+       returning a.*`,
+      [status, claimedStatus, limit]
     );
     return r.rows.map(mapVideoAsset);
   });
@@ -1227,22 +1366,60 @@ export async function listVideoAssetsByStatus(status: VideoAssetStatus): Promise
  * already-processed master). Call this once at worker startup and safe to
  * call again on every poll tick — it's a no-op when nothing is stale.
  */
-export async function recoverStaleVideoJobs(staleMinutes = 15): Promise<number> {
+export async function recoverStaleVideoJobs(
+  staleMinutes = 15,
+  maxAttempts = 3
+): Promise<{ requeued: number; deadLettered: number }> {
   return withSystemContext(async (client) => {
-    const r = await client.query(
+    // Both casts are explicit on purpose. $1::text: Postgres cannot infer a
+    // parameter's type from `$1 || ' minutes'` alone. power(...)::int: power()
+    // returns double precision, and `double precision * interval` is not a
+    // defined operator — only `int * interval` and `numeric * interval` are.
+    const stale = `now() - ($1::text || ' minutes')::interval`;
+
+    // Jobs that still have attempts left go back to their queued status,
+    // with an exponential backoff (2^attempts minutes, capped at an hour)
+    // so a job that keeps killing the worker stops hot-looping.
+    const requeued = await client.query(
       `update video_assets
        set status = case status
              when 'processing' then 'uploaded'
              when 'rendering' then 'confirmed'
            end,
            error_message = 'recovered after worker restart — retried automatically',
+           next_retry_at = now() + least(
+             power(2, attempts)::int * interval '1 minute',
+             interval '1 hour'
+           ),
            updated_at = now()
        where status in ('processing', 'rendering')
-         and updated_at < now() - ($1 || ' minutes')::interval
+         and updated_at < ${stale}
+         and attempts < $2
        returning id`,
-      [staleMinutes]
+      [staleMinutes, maxAttempts]
     );
-    return r.rowCount ?? 0;
+
+    // Dead-letter: attempts exhausted. 'failed' is terminal — nothing
+    // requeues out of it — and is already surfaced to the user, so the job
+    // becomes visible instead of looping forever. See migration 011 for why
+    // this reuses 'failed' rather than adding a status.
+    const deadLettered = await client.query(
+      `update video_assets
+       set status = 'failed',
+           error_message = 'обработка не удалась после ' || attempts
+             || ' попыток — задача снята с очереди',
+           updated_at = now()
+       where status in ('processing', 'rendering')
+         and updated_at < ${stale}
+         and attempts >= $2
+       returning id`,
+      [staleMinutes, maxAttempts]
+    );
+
+    return {
+      requeued: requeued.rowCount ?? 0,
+      deadLettered: deadLettered.rowCount ?? 0,
+    };
   });
 }
 
@@ -1275,7 +1452,15 @@ export async function updateVideoAssetStatus(
   return withUserContext(userId, async (client) => {
     const r = await client.query(
       `update video_assets
-       set status = $2, error_message = $3, updated_at = now()
+       set status = $2,
+           error_message = $3,
+           -- Clear any pending backoff: a job that reaches a real terminal
+           -- or waiting state ('preview_ready', 'published', 'failed',
+           -- 'cancelled') is no longer mid-retry, and a stale next_retry_at
+           -- would otherwise delay the NEXT claim of this asset — e.g. after
+           -- the user confirms a preview that had been retried once.
+           next_retry_at = null,
+           updated_at = now()
        where id = $1 and user_id = $4 returning *`,
       [videoAssetId, status, errorMessage ?? null, userId]
     );

@@ -1,9 +1,9 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useLoad } from "@/lib/useLoad";
 import type { Evidence } from "@nevidimka/shared-types";
 import { apiFetch } from "@/lib/apiClient";
-import { EmptyState, Eyebrow, Panel } from "@/components/ui";
+import { EmptyState, Eyebrow, LoadState, Panel } from "@/components/ui";
 
 const KIND_LABEL: Record<Evidence["kind"], string> = {
   text: "текст",
@@ -21,18 +21,24 @@ function formatDate(iso: string): string {
 }
 
 export default function JournalPage() {
-  const [evidences, setEvidences] = useState<Evidence[] | null>(null);
-
-  useEffect(() => {
-    apiFetch<{ evidences: Evidence[] }>("/api/journal").then((res) => setEvidences(res.evidences));
-  }, []);
+  const {
+    data,
+    state: loadState,
+    error: loadError,
+    reload,
+  } = useLoad<{ evidences: Evidence[] }>(() =>
+    apiFetch<{ evidences: Evidence[] }>("/api/journal")
+  );
+  const evidences = data?.evidences ?? null;
 
   return (
     <div className="px-5 pt-6">
       <Eyebrow>Дневник</Eyebrow>
 
       <div className="mt-4 space-y-3">
-        {evidences === null && <div className="text-sm text-ink-faint">Загрузка…</div>}
+        {loadState !== "ready" && (
+          <LoadState state={loadState} error={loadError} onRetry={reload} />
+        )}
         {evidences?.length === 0 && (
           <EmptyState title="Записей пока нет" hint="Отчёты по задачам появятся здесь." />
         )}

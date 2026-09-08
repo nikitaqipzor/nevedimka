@@ -1,6 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getPublication, markPublicationDeleted, markPublicationEdited } from "@nevidimka/db";
-import { deleteChannelMessage, editChannelMessage, TelegramApiError } from "@nevidimka/telegram";
+import {
+  deleteChannelMessage,
+  editChannelMessage,
+  escapeTelegramHtml,
+  TelegramApiError,
+} from "@nevidimka/telegram";
 import { validateTextLength } from "@nevidimka/shared-types";
 import { requireSession } from "@/lib/session";
 
@@ -57,7 +62,24 @@ export async function POST(req: NextRequest, { params }: RouteParams): Promise<N
         return NextResponse.json({ code: "TEXT_TOO_LONG", message: lengthError }, { status: 400 });
       }
 
-      await editChannelMessage({ botToken }, publication.channelId, publication.telegramMessageId, text);
+      // What goes to Telegram must be escaped: editChannelMessage sends
+      // parse_mode: "HTML", so a raw "<" or "&" in the user's text either
+      // breaks Telegram's parser outright or injects markup. This used to
+      // pass `text` through unescaped.
+      //
+      // What goes to the database is the UNescaped text, deliberately:
+      // studio/history/[id] renders edited_html as plain text
+      // (whitespace-pre-wrap) and seeds the edit textarea from it, so
+      // storing escaped HTML there would show the user literal "&lt;" and
+      // double-escape on the next edit. published_html is left untouched
+      // by markPublicationEdited — it stays the immutable snapshot of the
+      // original send.
+      await editChannelMessage(
+        { botToken },
+        publication.channelId,
+        publication.telegramMessageId,
+        escapeTelegramHtml(text)
+      );
       const updated = await markPublicationEdited(userId, id, text);
       return NextResponse.json({ ok: true, publication: updated });
     }

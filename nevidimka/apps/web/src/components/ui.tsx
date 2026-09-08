@@ -54,3 +54,53 @@ export function EmptyState({ title, hint }: { title: string; hint?: string }) {
     </div>
   );
 }
+
+/**
+ * Renders the non-ready states of a screen load (see lib/useLoad.ts):
+ * загрузка, ошибка, офлайн. Returns null when there is nothing to show, so
+ * a screen can render it unconditionally above its real content.
+ *
+ * Offline gets its own wording and no retry button — retrying without a
+ * network just fails again; the user reconnecting is what changes the
+ * outcome, and the service worker will already have served a cached Today
+ * screen where one exists.
+ */
+export function LoadState({
+  state,
+  error,
+  onRetry,
+}: {
+  state: "loading" | "ready" | "error" | "offline";
+  error?: string | null;
+  onRetry?: () => void;
+}) {
+  if (state === "ready") return null;
+
+  if (state === "loading") {
+    return <div className="px-5 pt-8 text-sm text-ink-faint">Загрузка…</div>;
+  }
+
+  if (state === "offline") {
+    return (
+      <div className="px-5 pt-8">
+        <EmptyState
+          title="Нет сети"
+          hint="Показываем последнее сохранённое состояние, если оно есть. Данные обновятся, когда связь вернётся."
+        />
+      </div>
+    );
+  }
+
+  return (
+    <div className="px-5 pt-8">
+      <div className="rounded-md border border-dashed border-warn/40 p-6 text-center">
+        <div className="text-sm text-ink-dim">{error ?? "Не удалось загрузить данные."}</div>
+        {onRetry && (
+          <GhostButton className="mt-3" onClick={onRetry}>
+            Повторить
+          </GhostButton>
+        )}
+      </div>
+    </div>
+  );
+}

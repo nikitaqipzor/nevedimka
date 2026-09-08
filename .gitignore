@@ -8,3 +8,6 @@ build/
 *.log
 .DS_Store
 .worktrees/
+
+# Visual brainstorming companion scratch files
+.superpowers/

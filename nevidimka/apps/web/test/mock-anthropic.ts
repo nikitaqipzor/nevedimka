@@ -31,6 +31,17 @@ export function startMockAnthropic(): Promise<{ url: string; close: () => Promis
     if (system.includes("аналитик поведения")) {
       return { observations: ["Темп выполнения стабильный уже вторую неделю подряд."] };
     }
+    if (system.includes("стратег")) {
+      // Onboarding from the web (/api/path draft_mission) calls this role.
+      return {
+        title: "Запустить продукт и довести до дохода",
+        description: "180 дней на один продукт, без распыления.",
+        milestones: [
+          { title: "Рабочая первая версия", target_day: 30 },
+          { title: "Первые пользователи", target_day: 90 },
+        ],
+      };
+    }
     if (system.includes("наставник по развитию навыков")) {
       return { guidance: [{ direction: "Создание", note: "Хороший темп — стоит поддерживать регулярность." }] };
     }

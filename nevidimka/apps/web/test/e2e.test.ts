@@ -35,11 +35,52 @@ const pageErrors: string[] = [];
 
 async function waitForText(p: Page, substring: string, timeoutMs = 15000): Promise<boolean> {
   const start = Date.now();
+  let lastText = "";
   while (Date.now() - start < timeoutMs) {
     const text = await p.textContent("body").catch(() => "");
+    lastText = text ?? "";
     if (text?.includes(substring)) return true;
     await p.waitForTimeout(150);
   }
+  // On timeout, say what WAS on screen. Without this a failure reports only
+  // "expected true, got false", which says nothing about why — and chasing it
+  // means re-running the whole suite blind.
+  console.error(
+    `[waitForText] timed out waiting for ${JSON.stringify(substring)} at ${p.url()}
+` +
+      `  body was: ${lastText.replace(/\s+/g, " ").slice(0, 400)}`
+  );
+  return false;
+}
+
+/**
+ * Waits for text that lives in a form field's VALUE rather than in the
+ * document's text.
+ *
+ * waitForText reads textContent, which never includes the value of an
+ * <input> or <textarea> — the value is a property, not a child node. The
+ * onboarding review step and the Path editors put the mission title,
+ * milestone names and days into inputs precisely so they can be edited
+ * before saving, so asserting on them needs this instead. Using waitForText
+ * there produces a 15-second timeout and a failure that looks like the app
+ * never rendered, when in fact it rendered correctly.
+ */
+async function waitForFieldValue(p: Page, substring: string, timeoutMs = 15000): Promise<boolean> {
+  const start = Date.now();
+  let last: string[] = [];
+  while (Date.now() - start < timeoutMs) {
+    last = await p
+      .locator("input, textarea")
+      .evaluateAll((els) => els.map((e) => (e as HTMLInputElement).value))
+      .catch(() => [] as string[]);
+    if (last.some((v) => v.includes(substring))) return true;
+    await p.waitForTimeout(150);
+  }
+  console.error(
+    `[waitForFieldValue] timed out waiting for ${JSON.stringify(substring)} at ${p.url()}
+` +
+      `  field values were: ${JSON.stringify(last).slice(0, 400)}`
+  );
   return false;
 }
 
@@ -169,14 +210,36 @@ before(async () => {
   mockTg = await startMockTelegram();
 
   // --- real Next.js dev server, real child process ---
-  const nextBin = new URL("../../../node_modules/.bin/next", import.meta.url).pathname;
+  // Resolved via import.meta.dirname, not `new URL(...).pathname`: on Windows
+  // the latter yields "/G:/path/..." — a leading slash that makes spawn fail
+  // with ENOENT. The .cmd suffix is also required there, since npm creates a
+  // shell wrapper rather than an executable bin, and spawning a .cmd needs a
+  // shell. On POSIX the bare name is correct and no shell is needed.
+  const isWindows = process.platform === "win32";
+  const nextBin = join(
+    import.meta.dirname,
+    "..",
+    "..",
+    "..",
+    "node_modules",
+    ".bin",
+    isWindows ? "next.cmd" : "next"
+  );
   devServer = spawn(nextBin, ["dev", "-p", String(WEB_PORT)], {
-    cwd: new URL("..", import.meta.url).pathname,
+    cwd: join(import.meta.dirname, ".."),
+    shell: isWindows,
     env: {
       ...process.env,
       DATABASE_URL: urlForDb(TEST_DB),
       JWT_SECRET: "test-secret-for-e2e",
       OWNER_TELEGRAM_ID,
+      // Required for the Mini App to authenticate without a Telegram host:
+      // api/auth/miniapp's dev fallback is gated on this explicit opt-in as
+      // well as NODE_ENV, so without it AuthProvider can never obtain a
+      // session and every screen renders its auth-error state instead of
+      // data. (The gate is deliberate — see that route's comment — and stays
+      // inert in production regardless of this value.)
+      ALLOW_DEV_AUTH: "true",
       ANTHROPIC_API_KEY: "test-key",
       ANTHROPIC_API_BASE_URL: mockAi.url,
       TELEGRAM_BOT_TOKEN: "TEST:TOKEN",
@@ -199,7 +262,20 @@ after(async () => {
   await browser?.close();
   if (devServer && !devServer.killed) {
     const exited = new Promise<void>((resolve) => devServer.once("exit", () => resolve()));
-    devServer.kill("SIGKILL");
+
+    // On Windows the server is spawned through a shell (next is a .cmd — see
+    // the spawn call above), so devServer.kill() terminates the shell and
+    // leaves the actual node process running: it keeps holding WEB_PORT and
+    // the test run never exits. taskkill /T kills the whole process tree.
+    // Confirmed failure mode: three separate runs hung after every test had
+    // already passed, each leaving an orphan listening on 3947.
+    if (process.platform === "win32" && devServer.pid) {
+      const { spawnSync } = await import("node:child_process");
+      spawnSync("taskkill", ["/PID", String(devServer.pid), "/T", "/F"], { stdio: "ignore" });
+    } else {
+      devServer.kill("SIGKILL");
+    }
+
     await Promise.race([exited, new Promise((r) => setTimeout(r, 5000))]);
   }
   await mockAi?.close();
@@ -351,7 +427,11 @@ test("/studio/history/[id]: editing calls the real Telegram API and updates stat
 
   await page.click('button:has-text("Редактировать")');
   const textarea = page.locator("textarea");
-  await textarea.fill("Отредактированный текст поста.");
+  // Includes a "<" on purpose: editMessageText is sent with
+  // parse_mode: "HTML", so an unescaped angle bracket makes Telegram reject
+  // the whole edit ("can't parse entities"). The route must escape what it
+  // sends while storing the text the UI actually displays.
+  await textarea.fill("Отредактированный текст поста <3.");
   await page.click('button:has-text("Сохранить в канале")');
 
   assert.ok(await waitForText(page, "Отредактированный текст поста"), "edited text must render as the current text");
@@ -360,7 +440,11 @@ test("/studio/history/[id]: editing calls the real Telegram API and updates stat
 
   const editCall = mockTg.calls.find((c) => c.method === "editMessageText");
   assert.ok(editCall, "editChannelMessage must have actually called the Telegram API");
-  assert.equal(editCall!.payload.text, "Отредактированный текст поста.");
+  assert.equal(
+    editCall!.payload.text,
+    "Отредактированный текст поста &lt;3.",
+    "text sent to Telegram must be HTML-escaped for parse_mode: HTML"
+  );
 
   const db = await import("@nevidimka/db");
   const owner = await db.getOrCreateUser({ telegramId: OWNER_TELEGRAM_ID });
@@ -466,6 +550,164 @@ test("/settings: account deletion cascades for real, confirmed by direct DB chec
   await check.end();
   assert.equal(r.rows[0].n, 0, "user row must actually be gone from the database, not just logged out client-side");
   await db.closePool();
+});
+
+/**
+ * Runs AFTER the account-deletion test on purpose: that leaves the browser on
+ * /today with no user and no mission, which is exactly the state a first-time
+ * visitor is in. A fresh session is created by AuthProvider on load (dev auth
+ * re-creates the owner row), so this exercises the real cold-start path.
+ *
+ * Covers PROJECT_SPEC.md section 20's Release 2 criterion: starting a path
+ * had been possible only through the bot's /start conversation, so the web
+ * screens dead-ended at "Заверши онбординг в боте".
+ */
+test("/onboarding: a path can be started entirely from the web, no bot involved", async () => {
+  await page.goto(`${BASE}/today`, { waitUntil: "domcontentloaded" });
+  assert.ok(
+    await waitForText(page, "Начать путь"),
+    "an empty Today must offer to start the path, not just point at the bot"
+  );
+
+  await page.click('button:has-text("Начать путь")');
+  assert.ok(await waitForText(page, "День 0"), "step 1: Day 0");
+  await page.click('button:has-text("Дальше")');
+
+  assert.ok(await waitForText(page, "Договор с собой"), "step 2: commitment");
+  await page.fill("textarea", "Обещаю доводить начатое до конца.");
+  await page.click('button:has-text("Дальше")');
+
+  assert.ok(await waitForText(page, "Одна главная цель"), "step 3: goal");
+  await page.fill("textarea", "Запустить продукт и довести до первого дохода");
+  await page.click('button:has-text("Дальше")');
+
+  assert.ok(await waitForText(page, "Срок"), "step 4: program length");
+  await page.click('button:has-text("180 дней")');
+  await page.click('button:has-text("Дальше")');
+
+  assert.ok(await waitForText(page, "Направления развития"), "step 5: directions");
+  await page.click('button:has-text("Создание")');
+  await page.fill('input[placeholder="Своё направление"]', "Публичность");
+  await page.click('button:has-text("Добавить")');
+
+  // Strategist call goes through the mock Anthropic server.
+  await page.click('button:has-text("Сформулировать миссию")');
+  assert.ok(
+    await waitForText(page, "предложение AI-стратега"),
+    "step 6: the draft must come back and be presented as unsaved"
+  );
+  assert.ok(
+    await waitForFieldValue(page, "Запустить продукт и довести до дохода"),
+    "the strategist's proposed title must render (in an editable field)"
+  );
+
+  await page.click('button:has-text("Принять и запустить")');
+  await page.waitForURL(/\/today/, { timeout: 15000 });
+
+  // The mission is real: Path renders it, and the DB has it with its
+  // milestones and the custom direction.
+  await page.goto(`${BASE}/path`, { waitUntil: "domcontentloaded" });
+  assert.ok(
+    await waitForText(page, "Запустить продукт и довести до дохода"),
+    "the new mission must appear on the Path screen"
+  );
+  assert.ok(await waitForText(page, "Публичность"), "the custom direction must persist");
+
+  const db = await import("@nevidimka/db");
+  const owner = await db.getOrCreateUser({ telegramId: OWNER_TELEGRAM_ID });
+  const mission = await db.getActiveMission(owner.id);
+  assert.ok(mission, "an active mission must exist in the database");
+  assert.equal(mission!.commitmentText, "Обещаю доводить начатое до конца.");
+  const milestones = await db.listMilestones(owner.id, mission!.id);
+  assert.equal(milestones.length, 2, "the strategist's milestones must be persisted");
+  await db.closePool();
+});
+
+test("/path: mission, commitment and milestones are all editable in place", async () => {
+  await page.goto(`${BASE}/path`, { waitUntil: "domcontentloaded" });
+  assert.ok(await waitForText(page, "Запустить продукт"));
+
+  // Three independent editors — mission, commitment, milestones.
+  assert.equal(
+    await page.locator('button:has-text("Изменить")').count(),
+    3,
+    "each editable section needs its own control"
+  );
+
+  // --- mission ---
+  await page.locator('button:has-text("Изменить")').first().click();
+  // The mission editor is identified by its direction input. Waiting on the
+  // element, not on text: "Добавить направление" is a placeholder attribute,
+  // which textContent never contains.
+  await page
+    .locator('input[placeholder="Добавить направление"]')
+    .waitFor({ state: "visible", timeout: 15000 });
+  // The title is the only text input that is not the direction field, and
+  // not a number/date input. Selecting by position alone would silently
+  // target the wrong box if the editor's layout ever changes.
+  await page
+    .locator('input:not([placeholder="Добавить направление"]):not([type="number"]):not([type="date"])')
+    .first()
+    .fill("Миссия, переписанная из веба");
+  await page.click('button:has-text("Сохранить")');
+  assert.ok(
+    await waitForText(page, "Миссия, переписанная из веба"),
+    "the edited title must render after saving"
+  );
+
+  // --- commitment ---
+  await page.locator('button:has-text("Изменить")').nth(1).click();
+  await page.locator("textarea").fill("Договор, переписанный из веба.");
+  await page.click('button:has-text("Сохранить")');
+  assert.ok(await waitForText(page, "Договор, переписанный из веба."));
+
+  // --- milestones: add one, and check it sorts by day ---
+  await page.locator('button:has-text("Изменить")').nth(2).click();
+  assert.ok(await waitForText(page, "Добавить этап"));
+  await page.click('button:has-text("Добавить этап")');
+  await page.locator('input[type="number"]').last().fill("45");
+  await page
+    .locator('input:not([type="number"]):not([type="date"])')
+    .last()
+    .fill("Этап, добавленный из веба");
+  await page.click('button:has-text("Сохранить")');
+  assert.ok(await waitForText(page, "Этап, добавленный из веба"));
+  assert.ok(await waitForText(page, "день 45"));
+
+  // Persisted, not just rendered.
+  const db = await import("@nevidimka/db");
+  const owner = await db.getOrCreateUser({ telegramId: OWNER_TELEGRAM_ID });
+  const mission = await db.getActiveMission(owner.id);
+  assert.equal(mission!.title, "Миссия, переписанная из веба");
+  assert.equal(mission!.commitmentText, "Договор, переписанный из веба.");
+  await db.closePool();
+});
+
+test("/path: cancelling an edit discards it, and invalid input is refused with a message", async () => {
+  await page.goto(`${BASE}/path`, { waitUntil: "domcontentloaded" });
+  assert.ok(await waitForText(page, "Договор, переписанный из веба."));
+
+  // Cancel must not write.
+  await page.locator('button:has-text("Изменить")').nth(1).click();
+  await page.locator("textarea").fill("ЭТОГО НЕ ДОЛЖНО БЫТЬ В БАЗЕ");
+  await page.click('button:has-text("Отмена")');
+  await page.waitForTimeout(400);
+  const body = (await page.textContent("body")) ?? "";
+  assert.ok(
+    !body.includes("ЭТОГО НЕ ДОЛЖНО БЫТЬ В БАЗЕ"),
+    "a cancelled edit must not appear on screen"
+  );
+  assert.ok(body.includes("Договор, переписанный из веба."), "the saved value must remain");
+
+  // Server-side validation must surface to the user, not fail silently.
+  await page.locator('button:has-text("Изменить")').nth(2).click();
+  assert.ok(await waitForText(page, "Добавить этап"));
+  await page.locator('input[type="number"]').first().fill("9999");
+  await page.click('button:has-text("Сохранить")');
+  assert.ok(
+    await waitForText(page, "День этапа должен быть"),
+    "an out-of-range day must produce a visible error"
+  );
 });
 
 test("PWA assets are served correctly", async () => {

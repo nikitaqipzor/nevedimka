@@ -13,7 +13,11 @@ import { join } from "node:path";
 import { runCommand } from "../src/ffmpeg.js";
 import { probeVideo } from "../src/probe.js";
 import { detectSilences } from "../src/silence.js";
-import { proposeCutsFromSilence } from "../src/cutPlan.js";
+import {
+  cutsToKeepSegments,
+  proposeCutsFromSilence,
+  remapSegmentsToKeptTimeline,
+} from "../src/cutPlan.js";
 import { segmentsToSrt } from "../src/srt.js";
 import { embedSubtitles, generateCover, renderPreview } from "../src/transform.js";
 import { runPipelineToPreview, runFinalRender } from "../src/pipeline.js";
@@ -192,5 +196,108 @@ test("full pipeline generates real subtitles when ASR is configured (mock server
     if (prevBase === undefined) delete process.env.ASR_API_BASE_URL;
     else process.env.ASR_API_BASE_URL = prevBase;
     await new Promise((r) => mockServer.close(() => r(undefined)));
+  }
+});
+
+// --- Subtitle/cut synchronisation ---------------------------------------
+// Regression tests for a confirmed drift bug: runPipelineToPreview
+// transcribes the ORIGINAL audio, then applyCuts compresses the timeline,
+// so embedding the untouched original timestamps drifted every caption
+// forward by the footage removed before it. remapSegmentsToKeptTimeline
+// rebases them; these tests pin that behaviour down.
+
+test("remapSegmentsToKeptTimeline shifts segments back by the footage cut before them", () => {
+  // Original 10s timeline, one 2s cut removed from 3s-5s.
+  const keep = cutsToKeepSegments([{ start: 3, end: 5, reason: "тишина" }], 10);
+  assert.deepEqual(keep, [
+    { start: 0, end: 3 },
+    { start: 5, end: 10 },
+  ]);
+
+  const segments = [
+    { start: 0, end: 2, text: "before the cut" },
+    { start: 6, end: 8, text: "after the cut" },
+  ];
+  const remapped = remapSegmentsToKeptTimeline(segments, keep);
+
+  // The first caption is before the cut, so it must not move at all.
+  assert.deepEqual(remapped[0], { start: 0, end: 2, text: "before the cut" });
+  // The second sat at 6s-8s originally; with 2s removed before it, it must
+  // now fire at 4s-6s. This is exactly the assertion that failed before.
+  assert.deepEqual(remapped[1], { start: 4, end: 6, text: "after the cut" });
+});
+
+test("a segment entirely inside a cut is dropped, not left pointing at removed speech", () => {
+  const keep = cutsToKeepSegments([{ start: 3, end: 7, reason: "тишина" }], 10);
+  const remapped = remapSegmentsToKeptTimeline(
+    [{ start: 4, end: 6, text: "this speech no longer exists" }],
+    keep
+  );
+  assert.equal(remapped.length, 0);
+});
+
+test("a segment straddling a cut is split into its surviving parts", () => {
+  const keep = cutsToKeepSegments([{ start: 4, end: 6, reason: "тишина" }], 10);
+  const remapped = remapSegmentsToKeptTimeline(
+    [{ start: 3, end: 7, text: "spans the cut" }],
+    keep
+  );
+
+  // 3s-4s survives as-is; 6s-7s survives shifted back by the 2s removed.
+  assert.equal(remapped.length, 2);
+  assert.deepEqual(remapped[0], { start: 3, end: 4, text: "spans the cut" });
+  assert.deepEqual(remapped[1], { start: 4, end: 5, text: "spans the cut" });
+});
+
+test("with no cuts at all, timestamps pass through untouched", () => {
+  const keep = cutsToKeepSegments([], 10);
+  const segments = [{ start: 1.5, end: 2.5, text: "unchanged" }];
+  assert.deepEqual(remapSegmentsToKeptTimeline(segments, keep), segments);
+});
+
+test("no subtitle cue outruns the cut video's real duration", async () => {
+  // End-to-end guard on the acceptance criterion "субтитры корректны":
+  // every generated cue must fall inside the actual post-cut video, which
+  // is what the drift bug violated.
+  const dir = await mkdtemp(join(tmpdir(), "nevidimka-srt-sync-"));
+  try {
+    const probe = await probeVideo(sourcePath);
+    const silences = await detectSilences(sourcePath);
+    const cuts = proposeCutsFromSilence(silences, probe.durationSeconds);
+    assert.ok(cuts.length > 0, "fixture must produce at least one real cut");
+
+    const keep = cutsToKeepSegments(cuts, probe.durationSeconds);
+    const keptDuration = keep.reduce((sum, k) => sum + (k.end - k.start), 0);
+
+    // Transcript segments covering the whole ORIGINAL 9s timeline,
+    // including speech inside the silent gap that gets cut away.
+    const original = [
+      { start: 0, end: 2.5, text: "first" },
+      { start: 3.2, end: 5.2, text: "inside the gap" },
+      { start: 6, end: 8.8, text: "last" },
+    ];
+    const remapped = remapSegmentsToKeptTimeline(original, keep);
+
+    for (const seg of remapped) {
+      assert.ok(
+        seg.end <= keptDuration + 0.05,
+        `cue ends at ${seg.end}s but the cut video is only ${keptDuration}s long`
+      );
+      assert.ok(seg.start < seg.end, "cue must have positive duration");
+    }
+
+    // The un-remapped original would have overrun: prove the test is real.
+    const worstOriginal = Math.max(...original.map((s) => s.end));
+    assert.ok(
+      worstOriginal > keptDuration,
+      "fixture must actually be capable of exposing the drift"
+    );
+
+    // And the SRT itself must be parseable/ordered.
+    const srt = segmentsToSrt(remapped);
+    await writeFile(join(dir, "c.srt"), srt, "utf8");
+    assert.match(srt, /^1\n00:00:0/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
   }
 });

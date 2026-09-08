@@ -133,13 +133,41 @@ export async function POST(req: NextRequest, { params }: RouteParams): Promise<N
       });
 
       await updateDraftStatus(userId, draftId, "publishing");
-      const publication = await createTextPublication({
-        userId,
-        draftId,
-        contentVersionId: version.id,
-        channelId,
-        publishedHtml: html,
-      });
+
+      // The status check above is check-then-act, so two concurrent publish
+      // requests can both reach here. uq_publications_draft_published
+      // (migrations/009) is the real guard: the loser's INSERT fails at the
+      // database level BEFORE anything is sent to Telegram, so no duplicate
+      // post is ever published. But that failure must not be left to bubble
+      // as a 500 — this INSERT used to sit outside the try below, which left
+      // the draft stuck in 'publishing' forever and made every retry answer
+      // 409 ALREADY_PUBLISHING, wedging the draft with no way back.
+      let publication: Awaited<ReturnType<typeof createTextPublication>>;
+      try {
+        publication = await createTextPublication({
+          userId,
+          draftId,
+          contentVersionId: version.id,
+          channelId,
+          publishedHtml: html,
+        });
+      } catch (err) {
+        // 23505 = unique_violation: a concurrent request already claimed
+        // this draft. Roll the status back off 'publishing' so the draft
+        // stays usable, and let the caller know the other attempt owns it.
+        if ((err as { code?: string }).code === "23505") {
+          await updateDraftStatus(userId, draftId, "ready_for_review");
+          return NextResponse.json(
+            {
+              code: "ALREADY_PUBLISHING",
+              message: "Публикация этого черновика уже выполняется.",
+            },
+            { status: 409 }
+          );
+        }
+        await updateDraftStatus(userId, draftId, "failed");
+        throw err;
+      }
 
       try {
         const result = await sendChannelMessage({ botToken }, channelId, html);
