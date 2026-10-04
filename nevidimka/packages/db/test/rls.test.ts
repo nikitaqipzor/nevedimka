@@ -132,3 +132,18 @@ test("two users cannot see each other's data under a real non-superuser RLS-enfo
   void taskA;
   void taskB;
 });
+
+test("production startup verifies real request/system role privileges", async () => {
+  const previous = process.env.NODE_ENV;
+  process.env.NODE_ENV = "production";
+  try {
+    await db.verifyDatabaseRoles();
+    await db.closePool();
+    process.env.DATABASE_URL = urlForDb(TEST_DB);
+    await assert.rejects(() => db.verifyDatabaseRoles(), /NOSUPERUSER NOBYPASSRLS/);
+  } finally {
+    await db.closePool();
+    process.env.DATABASE_URL = urlForRole(APP_ROLE, APP_PASSWORD);
+    if (previous === undefined) delete process.env.NODE_ENV; else process.env.NODE_ENV = previous;
+  }
+});

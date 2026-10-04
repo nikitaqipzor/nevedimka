@@ -41,9 +41,10 @@ The following areas must stay human-approved even if automation tooling is avail
 - Environment and secrets changes
 
 ## Current Security Status
-- Request-scoped operations use `DATABASE_URL`; reviewed cross-user operations and migrations use a separate `SYSTEM_DATABASE_URL`. Production rejects missing or identical credentials.
+- Request-scoped operations use `DATABASE_URL`; reviewed cross-user operations and migrations use a separate `SYSTEM_DATABASE_URL`. Production rejects missing URLs, identical usernames, privileged request roles and request ownership of non-forced RLS tables. The system role must bypass RLS.
 - Account deletion validates and removes referenced evidence/video files and per-asset work directories before deleting database rows; it fails closed while a video worker is active.
-- Restricted-role RLS and filesystem cleanup have focused tests, but the full Postgres and Docker scenarios still require CI/staging verification.
+- Restricted-role RLS, runtime DB privilege checks, shared volumes and production account deletion pass in CI/Docker. Live provider calls and deployment-level HTTPS/webhook delivery require deployment credentials.
+- Production requires a numeric owner ID; bot updates, Mini App registration and existing session verification enforce it. Webhook mode requires a secret and validates incoming secret headers. Test API overrides and dev authentication are rejected at startup.
 - Multi-user registration remains disabled until that verification, storage isolation, quotas, and the broader security review are complete.
 
 ## Verification Expectations

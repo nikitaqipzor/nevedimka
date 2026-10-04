@@ -10,3 +10,5 @@ build/
 test/**/*.js
 test/**/*.js.map
 test/**/*.d.ts
+
+.smoke-env.*

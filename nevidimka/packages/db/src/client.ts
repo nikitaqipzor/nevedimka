@@ -106,3 +106,25 @@ export async function withSystemContext<T>(
     client.release();
   }
 }
+
+/** Verify actual privileges: different URL strings alone cannot prove RLS enforcement. */
+export async function verifyDatabaseRoles(): Promise<void> {
+  if (process.env.NODE_ENV !== "production") return;
+  resolveDatabaseUrls();
+  const user = await getPool().query<{ rolname: string; rolsuper: boolean; rolbypassrls: boolean }>(
+    "select rolname, rolsuper, rolbypassrls from pg_roles where rolname = current_user"
+  );
+  const role = user.rows[0];
+  if (!role || role.rolsuper || role.rolbypassrls) throw new Error("DATABASE_URL must use a NOSUPERUSER NOBYPASSRLS role");
+  const owned = await getPool().query(
+    "select 1 from pg_class c join pg_namespace n on n.oid = c.relnamespace where n.nspname = 'public' and c.relrowsecurity and pg_get_userbyid(c.relowner) = current_user and not c.relforcerowsecurity limit 1"
+  );
+  if (owned.rowCount) throw new Error("DATABASE_URL role must not own non-forced RLS tables");
+  const system = await getSystemPool().query<{ rolname: string; rolsuper: boolean; rolbypassrls: boolean }>(
+    "select rolname, rolsuper, rolbypassrls from pg_roles where rolname = current_user"
+  );
+  const systemRole = system.rows[0];
+  if (!systemRole || systemRole.rolname === role.rolname || (!systemRole.rolsuper && !systemRole.rolbypassrls)) {
+    throw new Error("SYSTEM_DATABASE_URL must use a separate role able to perform system operations");
+  }
+}

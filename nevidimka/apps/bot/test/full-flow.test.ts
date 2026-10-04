@@ -100,6 +100,7 @@ before(async () => {
   await dbAdmin.end();
 
   process.env.DATABASE_URL = urlForDb(TEST_DB);
+  process.env.OWNER_TELEGRAM_ID = String(CHAT_ID);
   evidenceStorageRoot = await mkdtemp(join(tmpdir(), "nevidimka-full-flow-evidence-"));
   videoStorageRoot = await mkdtemp(join(tmpdir(), "nevidimka-full-flow-video-"));
   process.env.EVIDENCE_STORAGE_ROOT = evidenceStorageRoot;
@@ -136,11 +137,20 @@ after(async () => {
   await admin.end();
 });
 
+test("non-owner update cannot create an account", async () => {
+  const update = textUpdate("/start");
+  update.message!.from!.id = CHAT_ID + 1;
+  await bot.handleUpdate(update);
+  const rows = await dbRows(`select 1 from users where telegram_id = '${CHAT_ID + 1}'`);
+  assert.equal(rows.length, 0);
+});
+
 test("onboarding: /start creates a user and shows Day 0", async () => {
   await bot.handleUpdate(textUpdate("/start"));
-  const users = await dbRows(`select * from users where telegram_id = '${CHAT_ID}'`);
+  const users = await dbRows(`select *, day0_date = (created_at at time zone timezone)::date as starts_on_local_date from users where telegram_id = '${CHAT_ID}'`);
   assert.equal(users.length, 1);
   userId = users[0].id;
+  assert.equal(users[0].starts_on_local_date, true, "new account must start on its local calendar date");
   assert.match(lastBotReply(tgCalls) ?? "", /Дня 0/);
 });
 

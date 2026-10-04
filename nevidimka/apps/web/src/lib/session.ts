@@ -1,6 +1,7 @@
 import { SignJWT, jwtVerify } from "jose";
 import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
+import { isOwnerTelegramId } from "@nevidimka/shared-types";
 
 export const SESSION_COOKIE_NAME = "nevidimka_session";
 const ALG = "HS256";
@@ -30,6 +31,7 @@ export async function verifySessionToken(token: string): Promise<SessionPayload 
     if (typeof payload.userId !== "string" || typeof payload.telegramId !== "string") {
       return null;
     }
+    if (!isOwnerTelegramId(payload.telegramId)) return null;
     return { userId: payload.userId, telegramId: payload.telegramId };
   } catch {
     return null;

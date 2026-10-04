@@ -2,6 +2,7 @@ import { Bot } from "grammy";
 import { AiRateLimitExceededError } from "@nevidimka/ai";
 import { getOrCreateUser } from "@nevidimka/db";
 import { createLogger } from "@nevidimka/logger";
+import { isOwnerTelegramId } from "@nevidimka/shared-types";
 import { sessionMiddleware } from "./session.js";
 import { sequentialize } from "./middlewares/sequentialize.js";
 import type { BotContext } from "./types.js";
@@ -63,12 +64,12 @@ export function createBot(token: string, options?: { apiRoot?: string }): Bot<Bo
   // get a full account via the middleware below, and start consuming
   // Anthropic API credits (and, via /post or /video, attempt to publish
   // into the owner's private channel). Set OWNER_TELEGRAM_ID to restrict
-  // the bot to one Telegram account; leave it unset to allow open
-  // multi-user registration instead.
+  // the bot to one Telegram account. Production refuses to start without it;
+  // an unset owner only permits multi-user fixtures in development/tests.
   const ownerTelegramId = process.env.OWNER_TELEGRAM_ID;
-  if (ownerTelegramId) {
+  if (ownerTelegramId || process.env.NODE_ENV === "production") {
     bot.use(async (ctx, next) => {
-      if (!ctx.from || String(ctx.from.id) !== ownerTelegramId) {
+      if (!ctx.from || !isOwnerTelegramId(String(ctx.from.id))) {
         return; // silently ignore — no account is created, no reply is sent
       }
       await next();

@@ -19,8 +19,8 @@ Run these commands from `nevidimka/`.
 - Video tests: `npm run test --workspace=packages/video`
 - Bot tests: `npm run test --workspace=apps/bot`
 - Web tests: `npm run test --workspace=apps/web`
-- One Node test: `npx tsx --test <path-to-test-file>`
-- Validate Compose without a local `.env`: `ENV_FILE=.env.example docker compose config --quiet`
+- One Node test: `node --import tsx --test <path-to-test-file>`
+- Validate Compose without a local `.env`: `POSTGRES_PASSWORD=check_system APP_DB_PASSWORD=check_app ENV_FILE=.env.example docker compose config --quiet`
 
 ## Verification Order
 1. Run the smallest relevant command first.
@@ -33,3 +33,11 @@ Run these commands from `nevidimka/`.
 - Web end-to-end tests require Playwright Chromium.
 - There is not yet a lint command; adding one is part of the stabilization backlog.
 - Never report completion without running the relevant commands or stating the verification gap.
+
+## Launch Checks
+- Runtime configuration tests (after shared-types build): `npm run test:runtime`
+- Security audit: `npm audit --audit-level=moderate`
+- Disposable production Docker/DB/storage/deletion smoke: `npm run smoke:compose`
+- Live credentials and provider requests after build: `npm run smoke:integrations`
+- Optional billable real ASR: `npm run smoke:integrations -- --asr /path/to/test.ogg`
+- Use Node.js 22+; the live smoke reads local `.env`, never changes webhook settings, and does not publish to Telegram.

@@ -28,14 +28,16 @@ export function resolveDatabaseUrls(env: DatabaseEnvironment = process.env): Dat
     throw new Error("DATABASE_URL is not set");
   }
 
+  databaseCredentialIdentity(user);
   const configuredSystem = env.SYSTEM_DATABASE_URL?.trim();
+  if (configuredSystem) databaseCredentialIdentity(configuredSystem);
   if (env.NODE_ENV === "production" && !configuredSystem) {
     throw new Error("SYSTEM_DATABASE_URL is not set");
   }
   if (
     env.NODE_ENV === "production" &&
     configuredSystem &&
-    databaseCredentialIdentity(configuredSystem) === databaseCredentialIdentity(user)
+    new URL(configuredSystem).username === new URL(user).username
   ) {
     throw new Error("DATABASE_URL and SYSTEM_DATABASE_URL must use different credentials");
   }

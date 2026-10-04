@@ -43,3 +43,8 @@ Record short architectural, workflow, and security decisions here.
 - Decision: Treat project docs as source of truth and session memory as advisory only.
 - Why: Session memory can preserve stale architecture, temporary hacks, or incorrect assumptions.
 - Impact: Agents must verify remembered context against current docs and files before relying on it.
+
+## Launch dependency compatibility
+- Node.js 22+ is the supported runtime for CI and Docker.
+- Tailwind 4 with @tailwindcss/postcss replaces the vulnerable Tailwind 3 dependency chain. It requires modern WebViews (Safari 16.4+, Chrome 111+, Firefox 128+); see https://tailwindcss.com/docs/upgrade-guide.
+- Production remains owner-only. Startup validates configuration and actual request/system DB privileges; schema and RLS policies are unchanged.

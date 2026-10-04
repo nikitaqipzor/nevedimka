@@ -6,17 +6,28 @@
 
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
+import { createHmac } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
 import { chromium, type Browser, type Page } from "playwright";
 import pg from "pg";
 import { startMockAnthropic } from "./mock-anthropic.js";
 import { startMockTelegram } from "./mock-telegram.js";
+import { stopServerTree } from "./process-tree.js";
+import { todayInTimezone } from "../src/lib/dates.js";
 
 const ADMIN_URL = process.env.DATABASE_URL ?? "postgres://postgres:postgres@localhost:5432/postgres";
 const TEST_DB = "nevidimka_web_e2e_test";
 const WEB_PORT = 3947;
 const BASE = `http://localhost:${WEB_PORT}`;
 const OWNER_TELEGRAM_ID = "700111222";
+
+function signedInitData(id: number): string {
+  const params = new URLSearchParams({ auth_date: String(Math.floor(Date.now() / 1000)), user: JSON.stringify({ id, first_name: "Test" }) });
+  const check = [...params.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([k, v]) => `${k}=${v}`).join("\n");
+  const key = createHmac("sha256", "WebAppData").update("TEST:TOKEN").digest();
+  params.set("hash", createHmac("sha256", key).update(check).digest("hex"));
+  return params.toString();
+}
 
 function urlForDb(dbName: string): string {
   const u = new URL(ADMIN_URL);
@@ -143,7 +154,7 @@ before(async () => {
   });
   await db.createMilestone({ userId: user.id, missionId: mission.id, title: "MVP готов", targetDay: 30 });
 
-  const today = new Date().toISOString().slice(0, 10);
+  const today = todayInTimezone(user.timezone);
   const plan = await db.getOrCreateTodayPlan(user.id, today, 12);
   await db.saveCheckIn(user.id, plan.id, { sleepQuality: 4, energy: 3, mood: 4, stress: 2 });
   await db.setPlanAiSummary(user.id, plan.id, "Никита, день 12 из 180. Продолжаем начатое.");
@@ -228,18 +239,14 @@ before(async () => {
   devServer = spawn(nextBin, ["dev", "-p", String(WEB_PORT)], {
     cwd: join(import.meta.dirname, ".."),
     shell: isWindows,
+    detached: !isWindows,
     env: {
       ...process.env,
       DATABASE_URL: urlForDb(TEST_DB),
       JWT_SECRET: "test-secret-for-e2e",
       OWNER_TELEGRAM_ID,
-      // Required for the Mini App to authenticate without a Telegram host:
-      // api/auth/miniapp's dev fallback is gated on this explicit opt-in as
-      // well as NODE_ENV, so without it AuthProvider can never obtain a
-      // session and every screen renders its auth-error state instead of
-      // data. (The gate is deliberate — see that route's comment — and stays
-      // inert in production regardless of this value.)
-      ALLOW_DEV_AUTH: "true",
+      // Signed Telegram browser fixture exercises auth without a dev bypass.
+      ALLOW_DEV_AUTH: "false",
       ANTHROPIC_API_KEY: "test-key",
       ANTHROPIC_API_BASE_URL: mockAi.url,
       TELEGRAM_BOT_TOKEN: "TEST:TOKEN",
@@ -250,64 +257,64 @@ before(async () => {
     stdio: "pipe",
   });
   devServer.stderr?.on("data", (d) => process.stderr.write(`[next:err] ${d}`));
+  devServer.stdout?.on("data", () => undefined);
   await waitForServer(BASE);
   await warmUpRoutes(BASE, ["/", "/today", "/path", "/journal", "/mentor", "/ideas", "/studio/video", "/studio/history", "/settings", "/manifest.json", "/sw.js"]);
 
   browser = await chromium.launch();
   page = await browser.newPage({ viewport: { width: 390, height: 844 } });
+  // Provider APIs already use fixtures. Do not let Telegram CDN availability
+  // block beforeInteractive hydration; authenticate with a real signed payload.
+  await page.route("https://telegram.org/js/telegram-web-app.js", route => route.fulfill({
+    contentType: "application/javascript",
+    body: `window.Telegram={WebApp:{initData:${JSON.stringify(signedInitData(Number(OWNER_TELEGRAM_ID)))},ready(){},expand(){}}};`,
+  }));
   page.on("pageerror", (err) => pageErrors.push(err.message));
 });
 
 after(async () => {
-  await browser?.close();
-  if (devServer && !devServer.killed) {
-    const exited = new Promise<void>((resolve) => devServer.once("exit", () => resolve()));
-
-    // On Windows the server is spawned through a shell (next is a .cmd — see
-    // the spawn call above), so devServer.kill() terminates the shell and
-    // leaves the actual node process running: it keeps holding WEB_PORT and
-    // the test run never exits. taskkill /T kills the whole process tree.
-    // Confirmed failure mode: three separate runs hung after every test had
-    // already passed, each leaving an orphan listening on 3947.
-    if (process.platform === "win32" && devServer.pid) {
-      const { spawnSync } = await import("node:child_process");
-      spawnSync("taskkill", ["/PID", String(devServer.pid), "/T", "/F"], { stdio: "ignore" });
-    } else {
-      devServer.kill("SIGKILL");
-    }
-
-    await Promise.race([exited, new Promise((r) => setTimeout(r, 5000))]);
+  // Attempt every cleanup even when an earlier resource fails to close.
+  const errors: unknown[] = [];
+  for (const cleanup of [
+    () => browser?.close(),
+    () => stopServerTree(devServer),
+    () => mockAi?.close(),
+    () => mockTg?.close(),
+    async () => (await import("@nevidimka/db")).closePool(),
+  ]) {
+    try { await cleanup(); } catch (err) { errors.push(err); }
   }
-  await mockAi?.close();
-  await mockTg?.close();
 
   const { rm } = await import("node:fs/promises");
   const { join } = await import("node:path");
-  await rm(join(import.meta.dirname, "..", ".e2e-video-storage"), { recursive: true, force: true }).catch(
-    () => undefined
-  );
-
-  const admin = new pg.Client({ connectionString: ADMIN_URL });
-  await admin.connect();
-  // Dev-server connection cleanup after SIGKILL isn't perfectly
-  // synchronous with the OS reporting the process as exited — retry
-  // rather than race it precisely.
-  for (let attempt = 1; attempt <= 5; attempt++) {
-    try {
-      await admin.query(`drop database if exists ${TEST_DB}`);
-      break;
-    } catch (err) {
-      if (attempt === 5) throw err;
-      await new Promise((r) => setTimeout(r, 1000));
-    }
+  await rm(join(import.meta.dirname, "..", ".e2e-video-storage"), { recursive: true, force: true });
+  const admin = new pg.Client({ connectionString: ADMIN_URL, connectionTimeoutMillis: 5000 });
+  try {
+    await admin.connect();
+    await admin.query("set statement_timeout = '10s'");
+    await admin.query(`drop database if exists ${TEST_DB}`);
+  } catch (err) {
+    errors.push(err);
+  } finally {
+    await admin.end();
   }
-  await admin.end();
+  if (errors.length) throw new AggregateError(errors, "E2E cleanup failed");
+}, { timeout: 30000 });
+
+test("signed initData from a non-owner cannot register through Mini App", async () => {
+  const response = await fetch(`${BASE}/api/auth/miniapp`, { method: "POST", headers: { "Content-Type": "application/json", "Sec-Fetch-Site": "same-origin" }, body: JSON.stringify({ initData: signedInitData(700111223) }) });
+  assert.equal(response.status, 403);
+  assert.equal((await response.json()).code, "OWNER_ONLY");
+  const client = new pg.Client({ connectionString: urlForDb(TEST_DB) });
+  try { await client.connect(); const rows = await client.query("select 1 from users where telegram_id = '700111223'"); assert.equal(rows.rowCount, 0); }
+  finally { await client.end(); }
 });
 
 test("root redirects to /today with real data rendered (real browser, real JS execution)", async () => {
   await page.goto(BASE, { waitUntil: "domcontentloaded" });
   await page.waitForURL(/\/today/, { timeout: 25000 });
   assert.ok(page.url().includes("/today"));
+  assert.equal(await page.locator("main").evaluate(el => getComputedStyle(el).maxWidth), "448px", "Tailwind layout utilities must be present");
   assert.ok(await waitForText(page, "Настроить CI"), "main task from the seeded DB must render");
   assert.ok(await waitForText(page, "день 12 из 180"), "AI plan summary must render");
 });

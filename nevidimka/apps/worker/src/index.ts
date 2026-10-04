@@ -1,8 +1,11 @@
 import "dotenv/config";
+import { validateRuntimeEnvironment } from "@nevidimka/shared-types";
+import { verifyDatabaseRoles } from "@nevidimka/db";
 import { claimVideoAssetsForProcessing, recoverStaleVideoJobs } from "@nevidimka/db";
 import { createLogger } from "@nevidimka/logger";
 import { processConfirmedAsset, processUploadedAsset } from "./jobs.js";
 
+validateRuntimeEnvironment("worker");
 const log = createLogger("worker");
 
 const POLL_INTERVAL_MS = Number(process.env.WORKER_POLL_INTERVAL_MS ?? 5000);
@@ -55,6 +58,7 @@ async function tick(): Promise<void> {
 }
 
 async function main(): Promise<void> {
+  await verifyDatabaseRoles();
   log.info({ pollIntervalMs: POLL_INTERVAL_MS }, "video worker started");
   // Sequential polling loop (not setInterval): guarantees the next poll
   // never overlaps a still-running ffmpeg job, which matters since a
