@@ -62,3 +62,11 @@ test("development and tests retain the single-URL fallback", () => {
     }
   );
 });
+
+test("different passwords for the same Postgres role cannot defeat separation", () => {
+  assert.throws(() => resolveDatabaseUrls({ NODE_ENV: "production", DATABASE_URL: "postgres://shared:first@localhost/app", SYSTEM_DATABASE_URL: "postgres://shared:second@localhost/app" }), /different credentials/);
+});
+
+test("invalid DB protocols are rejected even before production", () => {
+  assert.throws(() => resolveDatabaseUrls({ DATABASE_URL: "https://localhost/app" }), /postgres/);
+});

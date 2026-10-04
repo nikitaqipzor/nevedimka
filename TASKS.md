@@ -3,12 +3,12 @@
 High-level project priorities live here.
 
 ## Current Priorities
-- Verify the new root-level CI workflow on GitHub.
-- Verify separate request/system Postgres roles against a real database.
-- Verify end-to-end account deletion and shared storage volumes in Docker.
-- Validate runtime environment variables centrally and fail fast on invalid production configuration.
-- Review and upgrade dependencies responsible for 10 high and 5 moderate `npm audit` findings.
-- Smoke-test Docker Compose, Telegram webhook mode, and real ASR.
+- Keep the verified root CI gates green: audit/build, full Postgres/RLS/Playwright suite and disposable Docker production smoke.
+- Provision deployment credentials, public HTTPS and backups; use `LAUNCH_CHECKLIST.md`.
+- Run live Telegram/Anthropic smoke and optional real ASR with deployment credentials.
+- Verify owner-only product flow and publication in a test channel before production.
+
+Production configuration/DB privilege checks, webhook authentication, E2E teardown regression coverage and Compose storage/deletion smoke are implemented. The refreshed lockfile reports zero findings locally; CI gates `npm audit --audit-level=moderate`. Infrastructure verification passes in GitHub run 37244899244; live/deployment results must be recorded in `tasks/todo.md` before marking launch complete.
 
 ## Next Up
 - Add lint/format checks and a sustainable dependency/security scanning policy.

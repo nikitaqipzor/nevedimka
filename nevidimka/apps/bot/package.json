@@ -8,7 +8,7 @@
     "typecheck": "tsc -p tsconfig.typecheck.json --noEmit",
     "dev": "tsx watch src/index.ts",
     "start": "node dist/index.js",
-    "test": "tsx --test test/*.test.ts"
+    "test": "node --import tsx --test test/*.test.ts"
   },
   "dependencies": {
     "@nevidimka/ai": "*",
@@ -18,14 +18,13 @@
     "@nevidimka/telegram": "*",
     "@nevidimka/video": "*",
     "dotenv": "^16.4.7",
-    "express": "^4.21.2",
+    "express": "^4.22.3",
     "grammy": "^1.30.0",
-    "node-cron": "^3.0.3"
+    "node-cron": "^4.6.0"
   },
   "devDependencies": {
     "@types/express": "^5.0.0",
     "@types/node": "^22.10.2",
-    "@types/node-cron": "^3.0.11",
     "@types/pg": "^8.11.10",
     "pg": "^8.13.1",
     "tsx": "^4.19.2",

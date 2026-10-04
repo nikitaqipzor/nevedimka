@@ -1,5 +1,17 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
+if [ "$APP_DB_USER" = "$POSTGRES_USER" ]; then
+  echo "APP_DB_USER must differ from POSTGRES_USER" >&2
+  exit 1
+fi
+# Compose embeds passwords in connection URLs. Fail before generating a
+# malformed URL; use openssl rand -hex 32 for both deployment passwords.
+for password in "$APP_DB_PASSWORD" "$PGPASSWORD"; do
+  if [[ ! "$password" =~ ^[A-Za-z0-9_-]+$ ]]; then
+    echo "Compose database passwords must use URL-safe characters" >&2
+    exit 1
+  fi
+done
 
 psql -v ON_ERROR_STOP=1 \
   --username "$POSTGRES_USER" \

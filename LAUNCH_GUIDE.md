@@ -11,6 +11,21 @@
 
 ---
 
+## Production через Docker Compose
+
+Этот блок — актуальный путь запуска. Секции ниже описывают локальную разработку; их пример с одной Postgres-ролью нельзя переносить в production.
+
+1. Установите Node.js 22+ и Docker Compose. Из `nevidimka/` выполните `npm ci` и `cp .env.example .env`.
+2. Заполните токен бота, owner ID, ключ Anthropic, `JWT_SECRET`, публичный `APP_BASE_URL`, два независимых Compose-пароля. Секреты генерируйте `openssl rand -hex 32`; не отправляйте их в чат или git.
+3. Для polling оставьте webhook пустым. Для webhook задайте HTTPS URL `/telegram/webhook` и отдельный секрет. Все тестовые API override и dev auth оставьте пустыми.
+4. Настройте HTTPS reverse proxy: web на loopback-порту 3000, bot webhook на 3001. Postgres привязан к loopback. Compose задаёт общие storage-тома и отдельные DB-роли автоматически.
+5. Дождитесь зелёного root CI. При необходимости локально выполните `npm run smoke:compose`: он использует временный проект и фиктивные внешние ключи.
+6. Выполните `docker compose up -d --build`, затем `docker compose ps -a` и `docker compose logs --tail=100 bot worker web`. Миграции и bootstrap должны завершиться с кодом 0.
+7. Из каталога с заполненным `.env` после `npm run build` выполните `npm run smoke:integrations`. Он читает настройки Telegram и делает маленький платный запрос Anthropic; webhook не меняет. Опциональный ASR: `npm run smoke:integrations -- --asr /path/to/test.ogg`.
+8. Откройте Mini App из Telegram владельца, проверьте ежедневный цикл и тестовую публикацию. Webhook-проверка через API не заменяет реальную доставку сообщения от Telegram.
+
+Для внешнего Postgres необходимы обе URL с разными ролями; `DATABASE_URL` должен быть `NOSUPERUSER NOBYPASSRLS`, системная роль должна обходить RLS. Миграции выполняются системной ролью. Подробнее — `LAUNCH_CHECKLIST.md` и `SECURITY.md`.
+
 ## Шаг 0 — Что подготовить заранее
 
 Нужно четыре вещи. Каждая — 2-3 минуты.
@@ -23,8 +38,8 @@
 
 ### 2. Ваш личный Telegram ID
 Напишите **@userinfobot** в Telegram — он мгновенно ответит вашим numeric
-ID. Это `OWNER_TELEGRAM_ID`. **Не пропускайте этот шаг** — без него бот
-будет отвечать вообще любому, кто его найдёт (см. `AUDIT_REPORT.md`, раздел
+ID. Это `OWNER_TELEGRAM_ID`. **Не пропускайте этот шаг** — без него production-бот
+откажется запускаться (см. `AUDIT_REPORT.md`, раздел
 про контроль доступа).
 
 ### 3. Ключ Anthropic API
@@ -61,7 +76,7 @@ brew install postgresql@16 && createdb nevidimka
 ```bash
 unzip nevidimka-release1-2-3-4.zip
 cd nevidimka
-npm install
+npm ci
 cp .env.example .env
 ```
 

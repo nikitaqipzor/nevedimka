@@ -177,11 +177,14 @@ export async function getOrCreateUser(params: {
     // other column is touched, so an existing user's data is never
     // overwritten by a later getOrCreateUser call.
     const inserted = await client.query(
-      `insert into users (telegram_id, username, first_name)
-       values ($1, $2, $3)
+      `insert into users (telegram_id, username, first_name, timezone, day0_date)
+       values ($1, $2, $3, $4, (now() at time zone $4)::date)
        on conflict (telegram_id) do update set telegram_id = excluded.telegram_id
        returning *`,
-      [params.telegramId, params.username ?? null, params.firstName ?? null]
+      // Keep the initial timezone aligned with migrations/001_init.sql.
+      // Database current_date uses the server zone, which can already be
+      // yesterday for this user and incorrectly start the journey at Day 2.
+      [params.telegramId, params.username ?? null, params.firstName ?? null, "Europe/Amsterdam"]
     );
     return mapUser(inserted.rows[0]);
   });
@@ -1664,21 +1667,19 @@ export async function exportUserData(userId: string): Promise<Record<string, unk
  */
 export async function deleteUserAccount(userId: string): Promise<void> {
   await withUserContext(userId, async (client) => {
-    const [evidences, assets, renders] = await Promise.all([
-      client.query(
-        "select storage_path from evidences where user_id = $1 and storage_path is not null for update",
-        [userId]
-      ),
-      client.query(
-        "select id, original_storage_path, status from video_assets where user_id = $1 for update",
-        [userId]
-      ),
-      client.query(
-        `select storage_path, cover_path from video_renders
-         where user_id = $1 for update`,
-        [userId]
-      ),
-    ]);
+    // A transaction uses one pg client; issue queries sequentially.
+    const evidences = await client.query(
+      "select storage_path from evidences where user_id = $1 and storage_path is not null for update",
+      [userId]
+    );
+    const assets = await client.query(
+      "select id, original_storage_path, status from video_assets where user_id = $1 for update",
+      [userId]
+    );
+    const renders = await client.query(
+      "select storage_path, cover_path from video_renders where user_id = $1 for update",
+      [userId]
+    );
 
     assertAccountDeletionCanProceed(
       assets.rows.map((row) => row.status as VideoAssetStatus)

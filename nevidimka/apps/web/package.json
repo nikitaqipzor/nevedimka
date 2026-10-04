@@ -8,7 +8,7 @@
     "build": "next build",
     "start": "node .next/standalone/apps/web/server.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "tsx --test test/*.test.ts",
+    "test": "node --import tsx --test test/*.test.ts",
     "postbuild": "node scripts/copy-standalone-assets.mjs"
   },
   "dependencies": {
@@ -18,7 +18,7 @@
     "@nevidimka/telegram": "*",
     "jose": "^5.9.6",
     "lucide-react": "^0.468.0",
-    "next": "^15.1.3",
+    "next": "^15.5.27",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
   },
@@ -26,11 +26,11 @@
     "@types/node": "^22.10.2",
     "@types/react": "^19.0.2",
     "@types/react-dom": "^19.0.2",
-    "autoprefixer": "^10.4.20",
     "playwright": "1.56.1",
-    "postcss": "^8.4.49",
-    "tailwindcss": "^3.4.17",
+    "postcss": "^8.5.28",
+    "tailwindcss": "^4.3.3",
     "tsx": "^4.19.2",
-    "typescript": "^5.7.2"
+    "typescript": "^5.7.2",
+    "@tailwindcss/postcss": "^4.3.3"
   }
 }

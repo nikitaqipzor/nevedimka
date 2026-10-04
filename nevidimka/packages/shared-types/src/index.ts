@@ -1,4 +1,5 @@
 // Shared domain types for the "Nevidimka" system.
+export { isOwnerTelegramId, validateRuntimeEnvironment } from "./runtimeConfig.js";
 // Release 1 scope: users, missions, milestones, daily plans, tasks,
 // focus sessions, evidences, ideas, ai_logs.
 // Mirrors PROJECT_SPEC.md section 12 (Data model).

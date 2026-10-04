@@ -1,12 +1,14 @@
 import "dotenv/config";
-import express from "express";
+import { validateRuntimeEnvironment } from "@nevidimka/shared-types";
+import { verifyDatabaseRoles, closePool } from "@nevidimka/db";
 import cron from "node-cron";
-import { webhookCallback } from "grammy";
+import { createWebhookApp } from "./webhook.js";
 import { createLogger } from "@nevidimka/logger";
 import { createBot, registerBotCommands } from "./bot.js";
 import { runMorningReminderJob } from "./jobs/morning.js";
 import { runEveningReminderJob } from "./jobs/evening.js";
 
+validateRuntimeEnvironment("bot");
 const log = createLogger("bot");
 
 const token = process.env.TELEGRAM_BOT_TOKEN;
@@ -32,19 +34,12 @@ const webhookSecret = process.env.TELEGRAM_WEBHOOK_SECRET;
 const port = Number(process.env.PORT ?? 3000);
 
 async function main(): Promise<void> {
+  await verifyDatabaseRoles();
   await registerBotCommands(bot);
 
   if (webhookUrl && !webhookUrl.includes("your-domain.example.com")) {
     // Production mode: Telegram pushes updates to us over HTTPS.
-    const app = express();
-    app.use(express.json());
-    app.get("/health", (_req, res) => res.json({ ok: true }));
-    app.post(
-      "/telegram/webhook",
-      webhookCallback(bot, "express", {
-        secretToken: webhookSecret,
-      })
-    );
+    const app = createWebhookApp(bot, webhookSecret ?? "");
 
     await bot.api.setWebhook(webhookUrl, webhookSecret ? { secret_token: webhookSecret } : undefined);
     app.listen(port, () => {
@@ -64,3 +59,5 @@ main().catch((err) => {
   log.fatal({ err }, "fatal error starting bot");
   process.exit(1);
 });
+
+process.once("SIGTERM", () => { if (bot.isRunning()) bot.stop(); void closePool().finally(() => process.exit(0)); });

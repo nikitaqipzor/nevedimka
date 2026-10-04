@@ -8,23 +8,21 @@
 # DATABASE_URL / SYSTEM_DATABASE_URL values to every service. Override the
 # local-only passwords through .env before exposing Postgres externally.
 #
-# NOTE: written and reviewed carefully, but never run through a real
-# `docker compose up` — this sandbox has no Docker daemon. Treat the first
-# real run as the actual first test.
+# Root CI runs scripts/smoke-compose.sh with disposable DB/storage volumes.
 
 services:
   postgres:
     image: postgres:16
     environment:
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
       POSTGRES_DB: nevidimka
       APP_DB_USER: ${APP_DB_USER:-nevidimka_app}
-      APP_DB_PASSWORD: ${APP_DB_PASSWORD:-nevidimka_app_local}
+      APP_DB_PASSWORD: ${APP_DB_PASSWORD:?Set APP_DB_PASSWORD}
     volumes:
       - postgres_data:/var/lib/postgresql/data
     ports:
-      - "5432:5432"
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 5s
@@ -37,11 +35,11 @@ services:
     entrypoint: ["/bin/bash", "/bootstrap/postgres-init-app-role.sh"]
     environment:
       PGHOST: postgres
-      PGPASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      PGPASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
       POSTGRES_USER: postgres
       POSTGRES_DB: nevidimka
       APP_DB_USER: ${APP_DB_USER:-nevidimka_app}
-      APP_DB_PASSWORD: ${APP_DB_PASSWORD:-nevidimka_app_local}
+      APP_DB_PASSWORD: ${APP_DB_PASSWORD:?Set APP_DB_PASSWORD}
     volumes:
       - ./docker/postgres-init-app-role.sh:/bootstrap/postgres-init-app-role.sh:ro
     depends_on:
@@ -56,19 +54,23 @@ services:
     command: ["node", "packages/db/dist/migrate.js"]
     env_file: ${ENV_FILE:-.env}
     environment: &database-environment
-      DATABASE_URL: postgresql://${APP_DB_USER:-nevidimka_app}:${APP_DB_PASSWORD:-nevidimka_app_local}@postgres:5432/nevidimka
-      SYSTEM_DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD:-postgres}@postgres:5432/nevidimka
+      DATABASE_URL: postgresql://${APP_DB_USER:-nevidimka_app}:${APP_DB_PASSWORD:?Set APP_DB_PASSWORD}@postgres:5432/nevidimka
+      SYSTEM_DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}@postgres:5432/nevidimka
     depends_on:
       db-bootstrap:
         condition: service_completed_successfully
 
   bot:
+    init: true
+    ports:
+      - "127.0.0.1:${BOT_PORT:-3001}:3000"
     build:
       context: .
       target: bot
     env_file: ${ENV_FILE:-.env}
     environment:
       <<: *database-environment
+      PORT: 3000
       EVIDENCE_STORAGE_ROOT: /app/storage/evidence
       VIDEO_STORAGE_ROOT: /app/storage/video
     volumes:
@@ -82,12 +84,14 @@ services:
     restart: unless-stopped
 
   worker:
+    init: true
     build:
       context: .
       target: worker
     env_file: ${ENV_FILE:-.env}
     environment:
       <<: *database-environment
+      PORT: 3000
       VIDEO_STORAGE_ROOT: /app/storage/video
     volumes:
       - video_storage:/app/storage/video
@@ -99,16 +103,19 @@ services:
     restart: unless-stopped
 
   web:
+    init: true
     build:
       context: .
       target: web
     env_file: ${ENV_FILE:-.env}
     environment:
       <<: *database-environment
+      PORT: 3000
+      HOSTNAME: 0.0.0.0
       EVIDENCE_STORAGE_ROOT: /app/storage/evidence
       VIDEO_STORAGE_ROOT: /app/storage/video
     ports:
-      - "3000:3000"
+      - "127.0.0.1:${WEB_PORT:-3000}:3000"
     volumes:
       - evidence_storage:/app/storage/evidence
       - video_storage:/app/storage/video

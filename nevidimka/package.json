@@ -10,12 +10,21 @@
   "scripts": {
     "build": "npm run build --workspace=packages/shared-types && npm run build --workspace=packages/telegram && npm run build --workspace=packages/video && npm run build --workspace=packages/logger && npm run build --workspace=packages/db && npm run build --workspace=packages/ai && npm run build --workspace=apps/bot && npm run build --workspace=apps/worker && npm run build --workspace=apps/web",
     "typecheck": "npm run build --workspace=packages/shared-types && npm run build --workspace=packages/telegram && npm run build --workspace=packages/video && npm run build --workspace=packages/logger && npm run build --workspace=packages/db && npm run build --workspace=packages/ai && npm run build --workspace=apps/bot && npm run typecheck --workspaces --if-present",
-    "test": "npm run test --workspace=packages/ai && npm run test --workspace=packages/db && npm run test --workspace=packages/video && npm run test --workspace=apps/bot && npm run test --workspace=apps/web",
+    "test": "npm run test --workspace=packages/shared-types && npm run test --workspace=packages/ai && npm run test --workspace=packages/db && npm run test --workspace=packages/video && npm run test --workspace=apps/bot && npm run test --workspace=apps/web",
     "dev:bot": "npm run dev --workspace=apps/bot",
     "db:migrate": "npm run migrate --workspace=packages/db",
-    "db:migrate:down": "npm run migrate:down --workspace=packages/db"
+    "db:migrate:down": "npm run migrate:down --workspace=packages/db",
+    "test:runtime": "node --test packages/shared-types/test/*.test.mjs",
+    "smoke:compose": "bash scripts/smoke-compose.sh",
+    "smoke:integrations": "node scripts/smoke-integrations.mjs"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
+  },
+  "overrides": {
+    "postcss": "^8.5.28",
+    "sharp": "^0.35.5",
+    "nanoid": "^3.3.18",
+    "qs": "^6.16.0"
   }
 }

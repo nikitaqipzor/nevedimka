@@ -11,14 +11,9 @@
 # In practice, use docker-compose.yml instead of building these by hand —
 # it wires all three together with Postgres and the right env vars.
 #
-# NOTE: written and reviewed carefully, but never run through a real
-# `docker build` — this sandbox has no Docker daemon available. Every path
-# and command here matches what was manually verified to work elsewhere in
-# this repo's history (see README.md's "Проверено" sections), but treat the
-# first real build as the actual first test and report back if anything
-# doesn't match.
+# Root CI builds every target and verifies production startup via Compose.
 
-FROM node:20-slim AS base
+FROM node:22-slim AS base
 WORKDIR /app
 
 # ---- full deps (needed only to build: typescript, tsx, playwright, ...) ----
@@ -29,6 +24,7 @@ COPY packages/db/package.json packages/db/package.json
 COPY packages/ai/package.json packages/ai/package.json
 COPY packages/telegram/package.json packages/telegram/package.json
 COPY packages/video/package.json packages/video/package.json
+COPY packages/logger/package.json packages/logger/package.json
 COPY apps/bot/package.json apps/bot/package.json
 COPY apps/worker/package.json apps/worker/package.json
 COPY apps/web/package.json apps/web/package.json
@@ -42,6 +38,7 @@ COPY packages/db/package.json packages/db/package.json
 COPY packages/ai/package.json packages/ai/package.json
 COPY packages/telegram/package.json packages/telegram/package.json
 COPY packages/video/package.json packages/video/package.json
+COPY packages/logger/package.json packages/logger/package.json
 COPY apps/bot/package.json apps/bot/package.json
 COPY apps/worker/package.json apps/worker/package.json
 COPY apps/web/package.json apps/web/package.json

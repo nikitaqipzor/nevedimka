@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getOrCreateUser } from "@nevidimka/db";
+import { isOwnerTelegramId } from "@nevidimka/shared-types";
 import { validateInitData } from "@/lib/telegramAuth";
 import { createSessionToken, SESSION_COOKIE_NAME } from "@/lib/session";
 
@@ -41,6 +42,9 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     );
   }
 
+  if (!isOwnerTelegramId(telegramId)) {
+    return NextResponse.json({ code: "OWNER_ONLY", message: "This installation is owner-only" }, { status: 403 });
+  }
   const user = await getOrCreateUser({ telegramId, firstName, username });
   const token = await createSessionToken({ userId: user.id, telegramId: user.telegramId });
 
